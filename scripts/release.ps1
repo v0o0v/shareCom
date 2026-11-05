@@ -19,8 +19,10 @@ Set-Location $root
 function Step($text) { Write-Host "[..] $text" }
 function Ok($text) { Write-Host "[OK] $text" }
 function Fail($text) { Write-Host "[FAIL] $text"; exit 1 }
+# PowerShell 5.1 은 외부 명령의 stderr 를 멈춤 오류로 바꾸므로, 외부 명령은 종료 코드로만 판단한다.
 function Run($exe, [string[]]$argv) {
-    & $exe @argv
+    $ErrorActionPreference = 'Continue'
+    & $exe @argv 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { Fail "$exe $($argv -join ' ') (exit $LASTEXITCODE)" }
 }
 
@@ -42,8 +44,11 @@ if ($DryRun) {
     git fetch -q origin main
     if ((git rev-parse HEAD).Trim() -ne (git rev-parse origin/main).Trim()) { Fail 'main is not the same as origin/main' }
     if (git tag --list $tag) { Fail "tag $tag already exists" }
-    & gh release view $tag *> $null
-    if ($LASTEXITCODE -eq 0) { Fail "release $tag already exists" }
+    $ErrorActionPreference = 'Continue'
+    & gh release view $tag 2>&1 | Out-Null
+    $exists = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = 'Stop'
+    if ($exists) { Fail "release $tag already exists" }
     Ok "version $Version, main is clean and pushed"
 }
 
