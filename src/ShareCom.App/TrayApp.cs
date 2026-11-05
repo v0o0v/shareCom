@@ -81,7 +81,8 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         _trust = new TrustSync(_node, _store);
         _trust.Log += text => Notify(text);
 
-        _layout = new LayoutSync(_identity.Id, _node, id => _store.Get(id)?.Side, id => _store.Revoked.ContainsKey(id), _storage.Settings.Layout);
+        _layout = new LayoutSync(_identity.Id, _node, id => _store.Get(id)?.Side, id => _store.Revoked.ContainsKey(id),
+            _storage.Settings.Layout, _storage.Settings.RememberedLayout);
         _router.SetLayout(_layout.Doc.Entries);
         _layout.Changed += OnLayoutChanged;
         _layout.SetSelf(_identity.Name, LocalScreen());
@@ -600,6 +601,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             doc = _layout.Doc;
             _router.SetLayout(doc.Entries);
             _storage.Settings.Layout = doc;
+            _storage.Settings.RememberedLayout = _layout.Remembered.ToList();
             SaveSettings();
         }
         _ui.BeginInvoke(() => _layoutEditor?.ShowRemoteChange(_layout.Doc));

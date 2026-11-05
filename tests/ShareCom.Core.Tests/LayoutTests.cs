@@ -218,6 +218,118 @@ public class LayoutSyncTests
     }
 }
 
+public class LayoutRepairTests
+{
+    private static readonly Guid A = Guid.Parse("00000000-0000-0000-0000-00000000000a");
+    private static readonly Guid B = Guid.Parse("00000000-0000-0000-0000-00000000000b");
+    private static readonly PcScreen Hd = new([new(0, 0, 1920, 1080)], 100);
+
+    private readonly FakeMessenger _netA = new(), _netB = new();
+    private readonly HashSet<Guid> _revokedByA = new(), _revokedByB = new();
+    private LayoutSync _a, _b;
+
+    public LayoutRepairTests()
+    {
+        _a = new LayoutSync(A, _netA, _ => NeighborSide.Right, _revokedByA.Contains);
+        _b = new LayoutSync(B, _netB, _ => NeighborSide.Left, _revokedByB.Contains);
+        _a.SetSelf("A", Hd);
+        _b.SetSelf("B", Hd);
+        Connect();
+        // 사용자가 배치 편집기에서 B 를 A 왼쪽으로 옮긴다(자동 배치는 오른쪽).
+        _a.ApplyPositions(new Dictionary<Guid, (int, int)> { [A] = (0, 0), [B] = (-1920, 0) });
+        Exchange();
+        Assert.Equal(-1920, _b.Doc.Find(B)!.X);
+        Assert.Equal(0, _b.Doc.Find(A)!.X);
+    }
+
+    private void Connect()
+    {
+        _netA.Peers.Add(B);
+        _netB.Peers.Add(A);
+        _a.OnConnected(B);
+        _b.OnConnected(A);
+        Exchange();
+    }
+
+    private void Disconnect()
+    {
+        _netA.Peers.Clear();
+        _netB.Peers.Clear();
+        _netA.Sent.Clear();
+        _netB.Sent.Clear();
+    }
+
+    private void Exchange()
+    {
+        for (int round = 0; round < 10; round++)
+        {
+            var toB = _netA.Sent.ToList(); _netA.Sent.Clear();
+            var toA = _netB.Sent.ToList(); _netB.Sent.Clear();
+            if (toB.Count == 0 && toA.Count == 0) return;
+            foreach (var (_, m) in toB) _b.OnMessage(A, m);
+            foreach (var (_, m) in toA) _a.OnMessage(B, m);
+        }
+    }
+
+    /// <summary>짝 풀기(양쪽에 퍼짐) → 끊김 → 다시 짝 맺기(양쪽 풀린 표시 지움) → 연결.</summary>
+    private void UnpairAndRepair(Action? whileUnpaired = null)
+    {
+        _revokedByA.Add(B);
+        _a.Refresh();
+        _revokedByB.Add(A);
+        _b.Refresh();
+        Disconnect();
+        Assert.Null(_a.Doc.Find(B)); // 짝을 푼 동안에는 배치에 없다
+        whileUnpaired?.Invoke();
+        _revokedByA.Remove(B);
+        _a.Refresh();
+        _revokedByB.Remove(A);
+        _b.Refresh();
+        Connect();
+    }
+
+    [Fact]
+    public void 다시_짝을_맺으면_예전_배치_자리로_돌아간다()
+    {
+        UnpairAndRepair();
+        Assert.Equal(-1920, _a.Doc.Find(B)!.X);
+        Assert.Equal(-1920, _b.Doc.Find(B)!.X);
+        Assert.Equal(0, _b.Doc.Find(A)!.X);
+        Assert.Equal(_a.Doc.Version, _b.Doc.Version);
+    }
+
+    [Fact]
+    public void 짝을_푼_동안_껐다_켜도_자리를_기억한다()
+    {
+        UnpairAndRepair(whileUnpaired: () =>
+        {
+            // 두 PC 모두 다시 켠다: 저장해 둔 배치와 기억한 자리로 새로 만든다.
+            _a = new LayoutSync(A, _netA, _ => NeighborSide.Right, _revokedByA.Contains, _a.Doc, _a.Remembered);
+            _b = new LayoutSync(B, _netB, _ => NeighborSide.Left, _revokedByB.Contains, _b.Doc, _b.Remembered);
+            _a.SetSelf("A", Hd);
+            _b.SetSelf("B", Hd);
+        });
+        Assert.Equal(-1920, _a.Doc.Find(B)!.X);
+        Assert.Equal(-1920, _b.Doc.Find(B)!.X);
+    }
+
+    [Fact]
+    public void 기억한_자리가_다른_PC와_겹치면_되살리지_않는다()
+    {
+        var c = Guid.Parse("00000000-0000-0000-0000-00000000000c");
+        _revokedByA.Add(B);
+        _a.Refresh();
+        Disconnect();
+        // 짝을 푼 동안 다른 PC C 가 그 자리에 들어왔다.
+        _a.OnMessage(c, new LayoutMessage(new LayoutDoc(_a.Doc.Version + 1, c,
+            [.. _a.Doc.Entries, new LayoutEntry(c, "C", -1920, 0, Hd)])));
+        _revokedByA.Remove(B);
+        _a.Refresh();
+        Assert.Null(_a.Doc.Find(B)); // 겹치는 자리에 되살리지 않는다(B 가 연결되면 스스로 새 자리에 들어온다)
+        Assert.Empty(_a.Remembered);
+    }
+}
+
 public class LayoutJsonTests
 {
     [Fact]
