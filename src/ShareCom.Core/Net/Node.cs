@@ -18,6 +18,8 @@ public sealed class NodeOptions
     public TimeSpan ConnectTimeout { get; init; } = TimeSpan.FromSeconds(3);
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan PairingTimeout { get; init; } = TimeSpan.FromMinutes(3);
+    /// <summary>들어온 짝 맺기 요청이 거절·실패로 끝나면 그 주소의 요청을 이만큼 무시한다.</summary>
+    public TimeSpan PairingCooldown { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan DiscoveryExpiry { get; init; } = TimeSpan.FromSeconds(10);
 }
 
@@ -50,6 +52,9 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
     private readonly HashSet<Guid> _dialing = new();
     private readonly Dictionary<Guid, DateTime> _lastConnectedUtc = new();
     private readonly Dictionary<Guid, DiscoveredPeer> _discovered = new();
+    // 들어오는 짝 맺기 요청 제한: 한 번에 하나, 거절·실패한 주소는 잠시 무시
+    private bool _incomingPairing;
+    private readonly Dictionary<IPAddress, DateTime> _pairingBlockedUntil = new();
     private readonly SemaphoreSlim _reconnectSignal = new(0);
     private readonly DateTime _startedUtc = DateTime.UtcNow;
     private TcpListener? _listener;
@@ -195,11 +200,52 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
 
         if (h.Mode == ConnectionMode.Pairing)
         {
-            var result = await RunPairingAsync(tcp, h, initiator: false).ConfigureAwait(false);
+            var from = (tcp.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
+            if (!TryBeginIncomingPairing(from, out var why))
+            {
+                Log?.Invoke($"짝 맺기 요청 무시: {from} ({h.PeerName}) - {why}");
+                h.Stream.Dispose();
+                tcp.Dispose();
+                return;
+            }
+            PairingResult result;
+            try
+            {
+                result = await RunPairingAsync(tcp, h, initiator: false).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_gate) _incomingPairing = false;
+            }
+            if (result.Outcome != PairingOutcome.Paired)
+                lock (_gate) _pairingBlockedUntil[from] = DateTime.UtcNow + _options.PairingCooldown;
             PairingCompleted?.Invoke(result);
             return;
         }
         Register(tcp, h, initiatedByMe: false);
+    }
+
+    /// <summary>
+    /// 같은 망의 누구나 짝 맺기 확인 창을 띄울 수 있으므로, 창이 쌓이거나 계속 뜨지 않게 막는다.
+    /// 한 번에 하나만 받고, 거절·실패·시간 초과로 끝난 주소는 <see cref="NodeOptions.PairingCooldown"/> 동안 무시한다.
+    /// </summary>
+    private bool TryBeginIncomingPairing(IPAddress from, out string why)
+    {
+        var now = DateTime.UtcNow;
+        lock (_gate)
+        {
+            foreach (var old in _pairingBlockedUntil.Where(kv => kv.Value <= now).Select(kv => kv.Key).ToList())
+                _pairingBlockedUntil.Remove(old);
+            if (_incomingPairing) { why = "다른 짝 맺기 요청을 처리하는 중"; return false; }
+            if (_pairingBlockedUntil.TryGetValue(from, out var until))
+            {
+                why = $"방금 거절·실패한 주소라 {(int)Math.Ceiling((until - now).TotalSeconds)}초 동안 받지 않음";
+                return false;
+            }
+            _incomingPairing = true;
+            why = "";
+            return true;
+        }
     }
 
     // ───────────── 걸기 ─────────────

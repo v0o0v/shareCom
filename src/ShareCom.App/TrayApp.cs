@@ -714,7 +714,9 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         if (!next)
         {
             var answer = MessageBox.Show(
-                "암호화를 끄면 같은 와이파이의 다른 기기가 키 입력(비밀번호 포함)을 엿볼 수 있습니다.\n" +
+                "암호화를 끄면 같은 와이파이의 다른 기기가 키 입력(비밀번호 포함)과 클립보드를 엿볼 수 있고,\n" +
+                "중간에 끼어들어 가짜 키 입력·마우스 조작을 넣어 이 PC를 관리자 권한으로 조작할 수도 있습니다.\n\n" +
+                "믿을 수 있는 집 망에서 문제를 찾을 때만 잠깐 끄세요.\n" +
                 "상대 PC도 암호화를 꺼야 실제로 평문으로 연결됩니다. 끌까요?",
                 "ShareCom", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (answer != DialogResult.OK) return;
