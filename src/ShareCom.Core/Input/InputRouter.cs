@@ -312,6 +312,14 @@ public sealed class InputRouter
             if (dir is { } d && !InCornerDeadZone(monitor, clamped.X, clamped.Y, d)
                 && FindTargetLocked(peerId, monitor, clamped.X, clamped.Y, d) is { } target)
             {
+                // 떠나는 PC의 포인터를 가장자리에서 조금 안쪽에 두고 놓는다. 가장자리에 남으면
+                // 그 PC의 마우스를 조금만 움직여도 곧바로 이쪽으로 넘어와 그 PC 포인터를 쓸 수 없다.
+                var inside = Inward(monitor, clamped, d, LeaveInset);
+                if (inside != (_rx, _ry))
+                {
+                    (_rx, _ry) = inside;
+                    _sink.Send(peerId, new MouseMoveMessage(_rx, _ry));
+                }
                 ReleaseRemoteLocked(peerId);
                 if (target.Id == _self)
                 {
@@ -338,6 +346,17 @@ public sealed class InputRouter
         _sink.SetLocalCursor(_park.X, _park.Y);
         return true;
     }
+
+    /// <summary>다른 PC를 떠날 때 그 PC 포인터를 가장자리에서 이만큼 안쪽에 둔다.</summary>
+    public const int LeaveInset = 2;
+
+    private static (int X, int Y) Inward(ScreenRect m, (int X, int Y) p, PushDirection d, int inset) => d switch
+    {
+        PushDirection.Left => (Math.Min(m.X + inset, m.Right - 1), p.Y),
+        PushDirection.Right => (Math.Max(m.Right - 1 - inset, m.X), p.Y),
+        PushDirection.Up => (p.X, Math.Min(m.Y + inset, m.Bottom - 1)),
+        _ => (p.X, Math.Max(m.Bottom - 1 - inset, m.Y)),
+    };
 
     private void TrySwitchAtEdgeLocked(int x, int y)
     {
