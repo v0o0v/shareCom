@@ -53,6 +53,8 @@ public sealed class InputRouter
     // 나를 조작 중인 PC
     private Guid? _controlledBy;
     private int _takeOverAccum;
+    // 다른 PC의 조작이 끝나 내 포인터를 숨겨 둔 상태. 이 PC의 실제 마우스를 쓰면 다시 보인다.
+    private bool _hiddenAfterControl;
 
     private bool _edgeLocked;
     private HotkeySettings _hotkeys = HotkeySettings.Default;
@@ -147,6 +149,7 @@ public sealed class InputRouter
             {
                 _controlledBy = null;
                 _sink.ReleaseInjectedInput();
+                HideAfterControlLocked();
             }
         }
     }
@@ -164,6 +167,7 @@ public sealed class InputRouter
             if (_controlling is not null) EndControlLocked(sendLeave: true, _park);
             _controlledBy = peer;
             _takeOverAccum = 0;
+            RevealLocked(); // 상대가 움직이는 포인터가 보여야 한다
         }
     }
 
@@ -174,7 +178,26 @@ public sealed class InputRouter
         {
             if (_controlledBy != peer) return;
             _controlledBy = null;
+            HideAfterControlLocked();
         }
+    }
+
+    /// <summary>
+    /// 다른 PC가 나를 놓으면 포인터는 마지막으로 받은 자리(빠르게 넘어갔으면 화면 안쪽)에 남는다.
+    /// 아무도 쓰지 않는 포인터가 화면에 떠 있지 않게 숨기고, 이 PC의 실제 마우스를 쓰면 다시 보인다.
+    /// </summary>
+    private void HideAfterControlLocked()
+    {
+        if (_controlling is not null || _hiddenAfterControl) return;
+        _hiddenAfterControl = true;
+        _sink.HideLocalCursor();
+    }
+
+    private void RevealLocked()
+    {
+        if (!_hiddenAfterControl) return;
+        _hiddenAfterControl = false;
+        _sink.ShowLocalCursor();
     }
 
     /// <summary>내가 조작하던 PC에서 그 PC 사용자가 주인을 되찾았다(TakeOver 받음).</summary>
@@ -195,6 +218,7 @@ public sealed class InputRouter
         lock (_gate)
         {
             if (_controlling is not null) EndControlLocked(sendLeave: true, _park);
+            RevealLocked();
         }
     }
 
@@ -224,6 +248,7 @@ public sealed class InputRouter
 
             CheckTakeOverLocked(moved);
             if (_controlledBy is not null) return false;
+            if (moved > 0) RevealLocked();
             TrySwitchAtEdgeLocked(x, y);
             return _controlling is not null;
         }
@@ -242,6 +267,7 @@ public sealed class InputRouter
                 return true;
             }
             CheckTakeOverLocked(int.MaxValue);
+            RevealLocked();
             if (down) _localButtons.Add(button); else _localButtons.Remove(button);
             return false;
         }
@@ -258,6 +284,7 @@ public sealed class InputRouter
                 return true;
             }
             CheckTakeOverLocked(int.MaxValue);
+            RevealLocked();
             return false;
         }
     }
@@ -343,6 +370,7 @@ public sealed class InputRouter
         _controlling = peer;
         (_rx, _ry) = entry;
         _awaitingPark = true;
+        _hiddenAfterControl = false; // 이제 다른 PC를 조작하느라 숨긴다(돌아오면 보인다)
         _sink.Send(peer, new EnterControlMessage(_rx, _ry));
         _sink.SetLocalCursor(_park.X, _park.Y);
         _sink.HideLocalCursor();
