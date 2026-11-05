@@ -11,6 +11,30 @@ namespace ShareCom.App;
 /// </summary>
 internal static class SelfTest
 {
+    /// <summary>
+    /// <c>ShareCom.exe --selftest-layout 그림.png</c>: 가짜 PC 3대 배치로 배치 편집기를 띄워 그림으로 저장한다.
+    /// </summary>
+    public static int RenderLayoutEditor(string outputPath)
+    {
+        Guid me = Guid.NewGuid(), a = Guid.NewGuid(), b = Guid.NewGuid();
+        var doc = new ShareCom.Core.Protocol.LayoutDoc(3, me,
+        [
+            new(me, "책상-본체", 0, 0, new([new(0, 0, 2560, 1440), new(2560, 180, 1920, 1080)], 125)),
+            new(a, "노트북", -1536, 200, new([new(0, 0, 1920, 1200)], 125)),
+            new(b, "거실-PC", 400, 1152, new([new(0, 0, 1920, 1080)], 100)),
+        ]);
+        using var form = new UI.LayoutEditorForm(doc, me, id => id == a, _ => { });
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-4000, -4000);
+        form.Show();
+        Application.DoEvents();
+        using var bmp = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.Size));
+        bmp.Save(outputPath, ImageFormat.Png);
+        form.Close();
+        return 0;
+    }
+
     public static int RunClipboard(string outputPath)
     {
         var report = new StringBuilder();

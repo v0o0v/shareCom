@@ -9,6 +9,7 @@ using ShareCom.Core.Clipboard;
 using ShareCom.Core.Files;
 using ShareCom.Core.Identity;
 using ShareCom.Core.Input;
+using ShareCom.Core.Layout;
 using ShareCom.Core.Net;
 using ShareCom.Core.Protocol;
 using Message = ShareCom.Core.Protocol.Message;
@@ -30,6 +31,9 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private readonly ClipboardSync _clipboard;
     private readonly ClipboardWatcher _clipboardWatcher;
     private readonly FileTransferService _files;
+    private readonly TrustSync _trust;
+    private readonly LayoutSync _layout;
+    private LayoutEditorForm? _layoutEditor;
     private Guid? _controlling;
 
     public TrayApp()
@@ -49,11 +53,19 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             SaveSettings();
             Notify(locked ? "가장자리 넘기기를 잠갔습니다. (Scroll Lock 으로 풀기)" : "가장자리 넘기기 잠금을 풀었습니다.");
         };
-        _router.SetLocalScreens(LocalMonitors());
-        SyncPeersToRouter();
-        _store.Changed += SyncPeersToRouter;
+        _router.SetSelf(_identity.Id);
+        _router.SetLocalScreens(LocalMonitors(), Win32.PrimaryScalePercent());
 
         _node = new Node(_identity, _store, new UdpDiscovery(), new NodeOptions { EncryptionEnabled = _storage.Settings.EncryptionEnabled });
+        _trust = new TrustSync(_node, _store);
+        _trust.Log += text => Notify(text);
+
+        _layout = new LayoutSync(_identity.Id, _node, id => _store.Get(id)?.Side, id => _store.Revoked.ContainsKey(id), _storage.Settings.Layout);
+        _router.SetLayout(_layout.Doc.Entries);
+        _layout.Changed += OnLayoutChanged;
+        _layout.SetSelf(_identity.Name, LocalScreen());
+        _store.Changed += () => _layout.Refresh();
+
         _node.Log += Log.Info;
         _node.PeerConnected += OnPeerConnected;
         _node.PeerDisconnected += OnPeerDisconnected;
@@ -312,7 +324,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private void OnPeerConnected(Guid peer)
     {
         _router.SetPeerConnected(peer, true);
-        _node.Send(peer, new ScreenInfoMessage(LocalMonitors()));
+        _layout.OnConnected(peer);
         var name = _store.Get(peer)?.Name ?? "PC";
         Notify($"'{name}' 와 연결됐습니다{(_node.IsEncrypted(peer) ? "" : " (암호화 꺼짐)")}.");
         _ui.BeginInvoke(UpdateTrayState);
@@ -332,11 +344,8 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         if (_files.OnMessage(peer, message)) return;
         switch (message)
         {
-            case ScreenInfoMessage s:
-                _router.SetPeerScreens(peer, s.Monitors);
-                break;
-            case LayoutSideMessage l when _store.Get(peer) is { } rec:
-                _store.Upsert(rec with { Side = l.SenderIsOnYour });
+            case LayoutMessage:
+                _layout.OnMessage(peer, message);
                 break;
             case EnterControlMessage e:
                 _router.BeginControlledBy(peer);
@@ -395,9 +404,26 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
 
     private void OnDisplayChanged(object? sender, EventArgs e)
     {
-        var monitors = LocalMonitors();
-        _router.SetLocalScreens(monitors);
-        foreach (var peer in _node.ConnectedPeers) _node.Send(peer, new ScreenInfoMessage(monitors));
+        var screen = LocalScreen();
+        _router.SetLocalScreens(screen.Monitors, screen.ScalePercent);
+        _layout.SetSelf(_identity.Name, screen);
+    }
+
+    /// <summary>배치가 바뀌었다(내가 고쳤거나 다른 PC에서 받았다).</summary>
+    private readonly object _layoutApplyGate = new();
+
+    private void OnLayoutChanged(LayoutDoc _)
+    {
+        // 알림은 잠금 밖에서 오므로 두 스레드의 알림 순서가 뒤바뀔 수 있다. 늘 최신 판을 다시 읽어 적용한다.
+        LayoutDoc doc;
+        lock (_layoutApplyGate)
+        {
+            doc = _layout.Doc;
+            _router.SetLayout(doc.Entries);
+            _storage.Settings.Layout = doc;
+            SaveSettings();
+        }
+        _ui.BeginInvoke(() => _layoutEditor?.ShowRemoteChange(_layout.Doc));
     }
 
     private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
@@ -442,16 +468,16 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         foreach (var p in peers)
         {
             var state = _node.IsConnected(p.Id) ? (_node.IsEncrypted(p.Id) ? "연결됨" : "연결됨, 암호화 꺼짐") : "연결 안 됨";
-            var item = new ToolStripMenuItem($"   {p.Name} — {SideText(p.Side)}, {state}");
-            var left = new ToolStripMenuItem("내 왼쪽에 두기") { Checked = p.Side == NeighborSide.Left };
-            var right = new ToolStripMenuItem("내 오른쪽에 두기") { Checked = p.Side == NeighborSide.Right };
-            left.Click += (_, _) => SetSide(p.Id, NeighborSide.Left);
-            right.Click += (_, _) => SetSide(p.Id, NeighborSide.Right);
+            var item = new ToolStripMenuItem($"   {p.Name} — {state}");
             var unpair = new ToolStripMenuItem("짝 풀기…");
             unpair.Click += (_, _) => Unpair(p);
-            item.DropDownItems.AddRange([left, right, new ToolStripSeparator(), unpair]);
+            item.DropDownItems.Add(unpair);
             menu.Items.Add(item);
         }
+
+        var layout = new ToolStripMenuItem("화면 배치…");
+        layout.Click += (_, _) => OpenLayoutEditor();
+        menu.Items.Add(layout);
 
         var pairMenu = new ToolStripMenuItem("새 PC와 짝 맺기");
         var candidates = _node.Discovered.Where(d => _store.Get(d.Id) is null).ToList();
@@ -506,7 +532,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         help.Click += (_, _) => MessageBox.Show(
             "Scroll Lock  : 가장자리 넘기기 잠금 켜기/끄기\n" +
             "Ctrl+Alt+1   : 내 PC로\n" +
-            "Ctrl+Alt+2~4 : 짝 맺은 PC로 바로 이동 (왼쪽 PC부터 차례로 번호)\n" +
+            "Ctrl+Alt+2~4 : 다른 PC로 바로 이동 (화면 배치에서 왼쪽 PC부터 차례로 번호)\n" +
             "Ctrl+Alt+Esc : 긴급 복귀 (무조건 내 PC로)\n\n" +
             "다른 PC를 조작하는 중에 그 PC의 마우스·키보드를 쓰면 그 PC가 주인을 되찾습니다.\n" +
             "Ctrl+Alt+Del 과 UAC 창·잠금 화면은 해당 PC에서 직접 조작해야 합니다.",
@@ -523,26 +549,30 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         menu.Items.Add(exit);
     }
 
-    private static string SideText(NeighborSide side) => side == NeighborSide.Left ? "왼쪽" : "오른쪽";
-
     private void StartPairing(System.Net.IPEndPoint endpoint)
     {
         Notify($"{endpoint.Address} 에 짝 맺기를 요청합니다. 두 PC 화면에 코드가 뜹니다.");
         _ = Task.Run(() => _node.PairAsync(endpoint));
     }
 
-    private void SetSide(Guid peer, NeighborSide side)
+    private void OpenLayoutEditor()
     {
-        if (_store.Get(peer) is not { } rec) return;
-        _store.Upsert(rec with { Side = side });
-        _node.Send(peer, new LayoutSideMessage(side.Opposite()));
+        if (_layoutEditor is { IsDisposed: false })
+        {
+            _layoutEditor.Activate();
+            return;
+        }
+        _layoutEditor = new LayoutEditorForm(_layout.Doc, _identity.Id, _node.IsConnected, positions => _layout.ApplyPositions(positions));
+        _layoutEditor.FormClosed += (_, _) => _layoutEditor = null;
+        _layoutEditor.Show();
+        _layoutEditor.Activate();
     }
 
     private void Unpair(PeerRecord p)
     {
-        var answer = MessageBox.Show($"'{p.Name}' 와 짝을 풀까요?\n다시 쓰려면 짝 맺기를 새로 해야 합니다.",
+        var answer = MessageBox.Show($"'{p.Name}' 와 짝을 풀까요?\n이 PC와 짝인 다른 PC들에서도 함께 풀립니다. 다시 쓰려면 짝 맺기를 새로 해야 합니다.",
             "ShareCom", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
-        if (answer == DialogResult.OK) _node.Unpair(p.Id);
+        if (answer == DialogResult.OK) _trust.Unpair(p.Id);
     }
 
     private void ToggleEncryption()
@@ -561,16 +591,6 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         SaveSettings();
         foreach (var peer in _node.ConnectedPeers) _node.Disconnect(peer); // 새 설정으로 다시 연결
     }
-
-    private void SyncPeersToRouter()
-    {
-        var all = _store.GetAll();
-        foreach (var p in all) _router.SetPeer(p.Id, p.Name, p.Side);
-        foreach (var known in _knownPeers.Except(all.Select(p => p.Id)).ToList()) _router.RemovePeer(known);
-        _knownPeers = all.Select(p => p.Id).ToHashSet();
-    }
-
-    private HashSet<Guid> _knownPeers = new();
 
     private void UpdateTrayState()
     {
@@ -604,6 +624,8 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         Screen.AllScreens.OrderByDescending(s => s.Primary)
               .Select(s => new ScreenRect(s.Bounds.X, s.Bounds.Y, s.Bounds.Width, s.Bounds.Height))
               .ToArray();
+
+    private static PcScreen LocalScreen() => new(LocalMonitors(), Win32.PrimaryScalePercent());
 
     protected override void Dispose(bool disposing)
     {

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using ShareCom.Core.Identity;
+using ShareCom.Core.Protocol;
 
 namespace ShareCom.App.Infra;
 
@@ -11,6 +12,10 @@ internal sealed class AppSettings
     public bool EdgeLocked { get; set; }
     public bool ClipboardEnabled { get; set; } = true;
     public List<PeerRecord> Peers { get; set; } = new();
+    /// <summary>짝을 푼 PC와 그 시각(UTC ticks). 자동 소개로 되살아나지 않게 한다.</summary>
+    public Dictionary<Guid, long> RevokedPeers { get; set; } = new();
+    /// <summary>모든 PC가 함께 쓰는 화면 배치(마지막으로 받은 판).</summary>
+    public LayoutDoc? Layout { get; set; }
 }
 
 /// <summary>
@@ -92,11 +97,12 @@ internal sealed class JsonPeerStore : MemoryPeerStore
 {
     private readonly AppStorage _storage;
 
-    public JsonPeerStore(AppStorage storage) : base(storage.Settings.Peers) => _storage = storage;
+    public JsonPeerStore(AppStorage storage) : base(storage.Settings.Peers, storage.Settings.RevokedPeers) => _storage = storage;
 
     protected override void OnChanged()
     {
         _storage.Settings.Peers = GetAll().ToList();
+        _storage.Settings.RevokedPeers = new Dictionary<Guid, long>(Revoked);
         try { _storage.Save(); } catch (Exception ex) { Log.Error("설정 저장 실패", ex); }
         base.OnChanged();
     }

@@ -8,7 +8,7 @@ namespace ShareCom.Core.Protocol;
 /// </summary>
 public static class MessageCodec
 {
-    public const int ProtocolVersion = 1;
+    public const int ProtocolVersion = 2;
     public const int MaxFrameBytes = 16 * 1024 * 1024;
 
     public static byte[] Encode(Message message)
@@ -80,11 +80,15 @@ public static class MessageCodec
             case PairDecisionMessage x: w.Write(x.Accepted); break;
             case PingMessage x: w.Write(x.Ticks); break;
             case PongMessage x: w.Write(x.Ticks); break;
-            case ScreenInfoMessage x:
-                w.Write(x.Monitors.Length);
-                foreach (var s in x.Monitors) { w.Write(s.X); w.Write(s.Y); w.Write(s.Width); w.Write(s.Height); }
+            case LayoutMessage x: WriteLayout(w, x.Doc); break;
+            case TrustMessage x:
+                w.Write(x.Entries.Length);
+                foreach (var e in x.Entries)
+                {
+                    w.Write(e.Id.ToByteArray()); w.Write(e.Name); WriteBytes(w, e.Certificate);
+                    w.Write(e.Address ?? ""); w.Write(e.Port); w.Write(e.AtUtcTicks); w.Write(e.Trusted);
+                }
                 break;
-            case LayoutSideMessage x: w.Write((byte)x.SenderIsOnYour); break;
             case EnterControlMessage x: w.Write(x.X); w.Write(x.Y); break;
             case LeaveControlMessage: break;
             case MouseMoveMessage x: w.Write(x.X); w.Write(x.Y); break;
@@ -112,8 +116,8 @@ public static class MessageCodec
         MessageType.PairDecision => new PairDecisionMessage(r.ReadBoolean()),
         MessageType.Ping => new PingMessage(r.ReadInt64()),
         MessageType.Pong => new PongMessage(r.ReadInt64()),
-        MessageType.ScreenInfo => ReadScreenInfo(r),
-        MessageType.LayoutSide => new LayoutSideMessage(ReadSide(r)),
+        MessageType.Layout => new LayoutMessage(ReadLayout(r)),
+        MessageType.Trust => ReadTrust(r),
         MessageType.EnterControl => new EnterControlMessage(r.ReadInt32(), r.ReadInt32()),
         MessageType.LeaveControl => new LeaveControlMessage(),
         MessageType.MouseMove => new MouseMoveMessage(r.ReadInt32(), r.ReadInt32()),
@@ -132,20 +136,68 @@ public static class MessageCodec
         _ => throw new InvalidDataException($"알 수 없는 메시지 종류: {(byte)type}"),
     };
 
-    private static NeighborSide ReadSide(BinaryReader r)
+    public const int MaxLayoutEntries = 16, MaxMonitors = 16, MaxNameLength = 256, MaxCertificateBytes = 16 * 1024;
+
+    private static void WriteLayout(BinaryWriter w, LayoutDoc d)
     {
-        var side = (NeighborSide)r.ReadByte();
-        if (side is not (NeighborSide.Left or NeighborSide.Right)) throw new InvalidDataException("잘못된 방향");
-        return side;
+        w.Write(d.Version); w.Write(d.Editor.ToByteArray()); w.Write(d.Entries.Length);
+        foreach (var e in d.Entries)
+        {
+            w.Write(e.Id.ToByteArray()); w.Write(e.Name); w.Write(e.X); w.Write(e.Y);
+            w.Write(e.Screen.ScalePercent); w.Write(e.Screen.Monitors.Length);
+            foreach (var s in e.Screen.Monitors) { w.Write(s.X); w.Write(s.Y); w.Write(s.Width); w.Write(s.Height); }
+        }
     }
 
-    private static ScreenInfoMessage ReadScreenInfo(BinaryReader r)
+    private static LayoutDoc ReadLayout(BinaryReader r)
+    {
+        long version = r.ReadInt64();
+        var editor = new Guid(r.ReadBytes(16));
+        int n = r.ReadInt32();
+        if (n < 0 || n > MaxLayoutEntries) throw new InvalidDataException("배치 항목 수가 잘못됨");
+        var entries = new LayoutEntry[n];
+        for (int i = 0; i < n; i++)
+        {
+            var id = new Guid(r.ReadBytes(16));
+            var name = ReadName(r);
+            int x = r.ReadInt32(), y = r.ReadInt32(), scale = r.ReadInt32();
+            if (scale < 50 || scale > 500) throw new InvalidDataException("배율이 잘못됨");
+            int m = r.ReadInt32();
+            if (m < 1 || m > MaxMonitors) throw new InvalidDataException("모니터 수가 잘못됨");
+            var monitors = new ScreenRect[m];
+            for (int k = 0; k < m; k++)
+            {
+                monitors[k] = new ScreenRect(r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadInt32());
+                if (monitors[k].Width <= 0 || monitors[k].Height <= 0 || monitors[k].Width > 100_000 || monitors[k].Height > 100_000)
+                    throw new InvalidDataException("모니터 크기가 잘못됨");
+            }
+            entries[i] = new LayoutEntry(id, name, x, y, new PcScreen(monitors, scale));
+        }
+        return new LayoutDoc(version, editor, entries);
+    }
+
+    private static TrustMessage ReadTrust(BinaryReader r)
     {
         int n = r.ReadInt32();
-        if (n < 0 || n > 64) throw new InvalidDataException("모니터 수가 잘못됨");
-        var list = new ScreenRect[n];
-        for (int i = 0; i < n; i++) list[i] = new ScreenRect(r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadInt32());
-        return new ScreenInfoMessage(list);
+        if (n < 0 || n > MaxLayoutEntries * 4) throw new InvalidDataException("신뢰 목록 수가 잘못됨");
+        var list = new TrustEntry[n];
+        for (int i = 0; i < n; i++)
+        {
+            var id = new Guid(r.ReadBytes(16));
+            var name = ReadName(r);
+            var cert = ReadBytes(r);
+            if (cert.Length > MaxCertificateBytes) throw new InvalidDataException("인증서가 너무 큼");
+            var address = r.ReadString();
+            list[i] = new TrustEntry(id, name, cert, address.Length == 0 ? null : address, r.ReadInt32(), r.ReadInt64(), r.ReadBoolean());
+        }
+        return new TrustMessage(list);
+    }
+
+    private static string ReadName(BinaryReader r)
+    {
+        var s = r.ReadString();
+        if (s.Length > MaxNameLength) throw new InvalidDataException("이름이 너무 김");
+        return s;
     }
 
     private static void WriteBytes(BinaryWriter w, byte[] data) { w.Write(data.Length); w.Write(data); }

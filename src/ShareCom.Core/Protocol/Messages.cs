@@ -37,9 +37,9 @@ public enum MessageType : byte
     Ping = 10,
     Pong = 11,
 
-    // 화면·배치
-    ScreenInfo = 20,
-    LayoutSide = 21,
+    // 배치·신뢰
+    Layout = 22,
+    Trust = 23,
 
     // 입력
     EnterControl = 30,
@@ -76,11 +76,39 @@ public sealed record PairDecisionMessage(bool Accepted) : Message(MessageType.Pa
 public sealed record PingMessage(long Ticks) : Message(MessageType.Ping);
 public sealed record PongMessage(long Ticks) : Message(MessageType.Pong);
 
-/// <summary>보내는 PC의 모니터 목록.</summary>
-public sealed record ScreenInfoMessage(ScreenRect[] Monitors) : Message(MessageType.ScreenInfo);
+/// <summary>PC 한 대의 화면: 모니터들(실제 픽셀, 그 PC의 가상 화면 좌표)과 배율(%, 주 모니터 기준).</summary>
+public sealed record PcScreen(ScreenRect[] Monitors, int ScalePercent)
+{
+    public bool SameAs(PcScreen? other) =>
+        other is not null && ScalePercent == other.ScalePercent && Monitors.AsSpan().SequenceEqual(other.Monitors);
+}
 
-/// <summary>"보내는 PC는 받는 PC의 <see cref="SenderIsOnYour"/> 쪽에 있다."</summary>
-public sealed record LayoutSideMessage(NeighborSide SenderIsOnYour) : Message(MessageType.LayoutSide);
+/// <summary>배치 속 PC 하나. (X, Y) 는 모든 PC가 함께 쓰는 평면(논리 픽셀 = 실제 픽셀 ÷ 배율)에서 이 PC 화면 전체의 왼쪽 위.</summary>
+public sealed record LayoutEntry(Guid Id, string Name, int X, int Y, PcScreen Screen);
+
+/// <summary>
+/// 모든 PC가 나눠 갖는 화면 배치. 더 새 판(Version 이 크고, 같으면 Editor 가 큰 쪽)이 이긴다.
+/// 각 PC는 자기 항목(이름·화면)만 넣고 고치며, 배치 편집기는 위치를 고친다.
+/// </summary>
+public sealed record LayoutDoc(long Version, Guid Editor, LayoutEntry[] Entries)
+{
+    public static readonly LayoutDoc Empty = new(0, Guid.Empty, []);
+
+    public bool IsNewerThan(LayoutDoc other) =>
+        Version != other.Version ? Version > other.Version : Editor.CompareTo(other.Editor) > 0;
+
+    public LayoutEntry? Find(Guid id) => Entries.FirstOrDefault(e => e.Id == id);
+}
+
+public sealed record LayoutMessage(LayoutDoc Doc) : Message(MessageType.Layout);
+
+/// <summary>
+/// 신뢰 목록 한 줄. Trusted 면 "이 PC를 믿는다(인증서 포함, 자동 소개)", 아니면 "이 PC와 짝을 풀었다".
+/// 같은 PC에 대한 줄이 둘이면 At(UTC ticks)이 늦은 쪽이 이긴다.
+/// </summary>
+public sealed record TrustEntry(Guid Id, string Name, byte[] Certificate, string? Address, int Port, long AtUtcTicks, bool Trusted);
+
+public sealed record TrustMessage(TrustEntry[] Entries) : Message(MessageType.Trust);
 
 /// <summary>주인 PC가 이 PC를 조작하기 시작한다. 커서를 (X,Y) 로 옮긴다.</summary>
 public sealed record EnterControlMessage(int X, int Y) : Message(MessageType.EnterControl);

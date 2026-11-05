@@ -20,7 +20,6 @@ public class MessageCodecTests
             new PairDecisionMessage(true),
             new PingMessage(123456789),
             new PongMessage(-5),
-            new LayoutSideMessage(NeighborSide.Left),
             new EnterControlMessage(-1920, 300),
             new LeaveControlMessage(),
             new MouseMoveMessage(5, -7),
@@ -50,8 +49,41 @@ public class MessageCodecTests
         var proof = RoundTrip(new AuthProofMessage([9, 8, 7, 6]));
         Assert.Equal(new byte[] { 9, 8, 7, 6 }, proof.Signature);
 
-        var screens = RoundTrip(new ScreenInfoMessage([new(0, 0, 1920, 1080), new(-1280, 100, 1280, 1024)]));
-        Assert.Equal([new(0, 0, 1920, 1080), new(-1280, 100, 1280, 1024)], screens.Monitors);
+        var a = Guid.NewGuid();
+        var doc = new LayoutDoc(7, a, [
+            new LayoutEntry(a, "거실 PC", -1920, 30, new PcScreen([new(0, 0, 1920, 1080), new(-1280, 100, 1280, 1024)], 125)),
+            new LayoutEntry(id, "작업실", 0, 0, new PcScreen([new(0, 0, 3840, 2160)], 200)),
+        ]);
+        var layout = RoundTrip(new LayoutMessage(doc)).Doc;
+        Assert.Equal(7, layout.Version);
+        Assert.Equal(a, layout.Editor);
+        Assert.Equal(2, layout.Entries.Length);
+        Assert.Equal("거실 PC", layout.Entries[0].Name);
+        Assert.Equal((-1920, 30), (layout.Entries[0].X, layout.Entries[0].Y));
+        Assert.True(doc.Entries[0].Screen.SameAs(layout.Entries[0].Screen));
+        Assert.True(doc.Entries[1].Screen.SameAs(layout.Entries[1].Screen));
+
+        var trust = RoundTrip(new TrustMessage([
+            new TrustEntry(a, "거실 PC", [1, 2, 3], "192.168.0.5", 47821, 638000000000000000, true),
+            new TrustEntry(id, "", [], null, 0, 5, false),
+        ])).Entries;
+        Assert.Equal("192.168.0.5", trust[0].Address);
+        Assert.Equal(new byte[] { 1, 2, 3 }, trust[0].Certificate);
+        Assert.True(trust[0].Trusted);
+        Assert.Null(trust[1].Address);
+        Assert.False(trust[1].Trusted);
+        Assert.Equal(5, trust[1].AtUtcTicks);
+    }
+
+    [Fact]
+    public void 배치의_배율이나_모니터_크기가_터무니없으면_거부한다()
+    {
+        var bad = new LayoutDoc(1, Guid.NewGuid(), [new LayoutEntry(Guid.NewGuid(), "x", 0, 0, new PcScreen([new(0, 0, 1920, 1080)], 5))]);
+        var bytes = MessageCodec.Encode(new LayoutMessage(bad));
+        Assert.Throws<InvalidDataException>(() => MessageCodec.Decode(bytes.AsSpan(4)));
+        var empty = new LayoutDoc(1, Guid.NewGuid(), [new LayoutEntry(Guid.NewGuid(), "x", 0, 0, new PcScreen([new(0, 0, 0, 1080)], 100))]);
+        bytes = MessageCodec.Encode(new LayoutMessage(empty));
+        Assert.Throws<InvalidDataException>(() => MessageCodec.Decode(bytes.AsSpan(4)));
     }
 
     [Fact]

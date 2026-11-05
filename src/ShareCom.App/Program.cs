@@ -21,6 +21,11 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             return SelfTest.ServeFiles(args[1], int.Parse(args[2]));
         }
+        if (args.Length == 2 && args[0] == "--selftest-layout")
+        {
+            ApplicationConfiguration.Initialize();
+            return SelfTest.RenderLayoutEditor(args[1]);
+        }
 
         using var mutex = new Mutex(true, @"Global\ShareCom-SingleInstance-v1", out bool first);
         if (!first)

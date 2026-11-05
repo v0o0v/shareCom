@@ -14,8 +14,10 @@ public sealed record PeerRecord
     /// <summary>마지막으로 연결된 주소. 자동 검색이 막힌 망에서 다시 붙을 때 쓴다.</summary>
     public string? LastAddress { get; init; }
     public int LastPort { get; init; }
-    /// <summary>내 기준으로 상대 PC가 놓인 방향.</summary>
+    /// <summary>처음 짝 맺을 때 정한 방향. 배치에 아직 내 자리가 없을 때 이 PC 옆에 나를 놓는 데 쓴다.</summary>
     public NeighborSide Side { get; init; } = NeighborSide.Right;
+    /// <summary>이 PC를 믿기 시작한 시각(UTC ticks, 직접 짝 맺기 또는 자동 소개). 짝 풀기와 어느 쪽이 나중인지 가린다.</summary>
+    public long TrustedAtUtcTicks { get; init; }
 }
 
 public interface IPeerStore
@@ -24,6 +26,10 @@ public interface IPeerStore
     PeerRecord? Get(Guid id);
     void Upsert(PeerRecord record);
     void Remove(Guid id);
+    /// <summary>짝을 푼 PC와 그 시각(UTC ticks). 자동 소개로 다시 들어오지 않게 기억한다.</summary>
+    IReadOnlyDictionary<Guid, long> Revoked { get; }
+    void SetRevoked(Guid id, long atUtcTicks);
+    void ClearRevoked(Guid id);
     event Action? Changed;
 }
 
@@ -31,14 +37,34 @@ public interface IPeerStore
 public class MemoryPeerStore : IPeerStore
 {
     private readonly Dictionary<Guid, PeerRecord> _peers = new();
+    private readonly Dictionary<Guid, long> _revoked = new();
     private readonly object _gate = new();
 
     public event Action? Changed;
 
-    public MemoryPeerStore(IEnumerable<PeerRecord>? initial = null)
+    public MemoryPeerStore(IEnumerable<PeerRecord>? initial = null, IReadOnlyDictionary<Guid, long>? revoked = null)
     {
-        if (initial is null) return;
-        foreach (var p in initial) _peers[p.Id] = p;
+        foreach (var p in initial ?? []) _peers[p.Id] = p;
+        foreach (var (id, at) in revoked ?? new Dictionary<Guid, long>()) _revoked[id] = at;
+    }
+
+    public IReadOnlyDictionary<Guid, long> Revoked { get { lock (_gate) return new Dictionary<Guid, long>(_revoked); } }
+
+    public void SetRevoked(Guid id, long atUtcTicks)
+    {
+        lock (_gate)
+        {
+            if (_revoked.TryGetValue(id, out var old) && old == atUtcTicks) return;
+            _revoked[id] = atUtcTicks;
+        }
+        OnChanged();
+    }
+
+    public void ClearRevoked(Guid id)
+    {
+        bool removed;
+        lock (_gate) removed = _revoked.Remove(id);
+        if (removed) OnChanged();
     }
 
     public IReadOnlyList<PeerRecord> GetAll() { lock (_gate) return _peers.Values.ToList(); }
@@ -66,5 +92,6 @@ public class MemoryPeerStore : IPeerStore
 
     private static bool RecordEquals(PeerRecord a, PeerRecord b) =>
         a.Name == b.Name && a.Thumbprint == b.Thumbprint && a.LastAddress == b.LastAddress &&
-        a.LastPort == b.LastPort && a.Side == b.Side;
+        a.LastPort == b.LastPort && a.Side == b.Side && a.TrustedAtUtcTicks == b.TrustedAtUtcTicks &&
+        a.Certificate.AsSpan().SequenceEqual(b.Certificate);
 }

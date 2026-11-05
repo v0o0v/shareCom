@@ -1,3 +1,4 @@
+using ShareCom.Core.Layout;
 using ShareCom.Core.Protocol;
 
 namespace ShareCom.Core.Input;
@@ -33,22 +34,16 @@ public sealed class InputRouter
     /// <summary>다른 PC로 넘어간 직후, 커서를 화면 가운데로 옮기기 전에 쌓인 이동은 이 거리 밖이면 버린다.</summary>
     public int ParkSettleRadius { get; set; } = 200;
 
-    private sealed class PeerState
-    {
-        public NeighborSide Side;
-        public ScreenRect[] Monitors = [];
-        public bool Connected;
-        public string Name = "";
-        public ScreenRect Bounds => ScreenRect.Union(Monitors);
-    }
-
     private readonly IInputSink _sink;
     private readonly object _gate = new();
-    private readonly Dictionary<Guid, PeerState> _peers = new();
+
+    private Guid _self;
+    private LayoutEntry[] _layout = [];          // 내 항목의 화면은 _localMonitors 로 바꿔 둔다
+    private readonly HashSet<Guid> _connected = new();
 
     private ScreenRect[] _localMonitors = [new ScreenRect(0, 0, 1920, 1080)];
+    private int _localScale = 100;
     private (int X, int Y) _park = (960, 540);
-
     // 내가 조작 중인 PC
     private Guid? _controlling;
     private int _rx, _ry;
@@ -84,50 +79,54 @@ public sealed class InputRouter
 
     // ───────────── 화면·상대 정보 ─────────────
 
-    /// <summary>내 모니터 목록. 첫 번째가 주 모니터라고 보고 그 가운데에 커서를 숨겨 둔다.</summary>
-    public void SetLocalScreens(ScreenRect[] monitors)
+    /// <summary>이 PC의 ID(배치에서 내 항목을 찾는 데 쓴다).</summary>
+    public void SetSelf(Guid id)
+    {
+        lock (_gate)
+        {
+            _self = id;
+            RebuildLayoutLocked(_layout);
+        }
+    }
+
+    /// <summary>내 모니터 목록과 배율. 첫 번째가 주 모니터라고 보고 그 가운데에 커서를 숨겨 둔다.</summary>
+    public void SetLocalScreens(ScreenRect[] monitors, int scalePercent = 100)
     {
         if (monitors.Length == 0) return;
         lock (_gate)
         {
             _localMonitors = monitors;
+            _localScale = scalePercent;
             var p = monitors[0];
             _park = (p.X + p.Width / 2, p.Y + p.Height / 2);
+            RebuildLayoutLocked(_layout);
         }
     }
 
-    public void SetPeer(Guid id, string name, NeighborSide side)
+    /// <summary>모든 PC의 배치(위치와 화면).</summary>
+    public void SetLayout(IReadOnlyList<LayoutEntry> entries)
     {
         lock (_gate)
         {
-            var s = Get(id);
-            s.Side = side;
-            s.Name = name;
+            RebuildLayoutLocked(entries);
+            if (_controlling is { } id && Monitors(id) is { Length: > 0 } monitors)
+                (_rx, _ry) = Clamp(monitors, _rx, _ry).Point;
         }
     }
 
-    public void RemovePeer(Guid id)
-    {
-        SetPeerConnected(id, false);
-        lock (_gate) _peers.Remove(id);
-    }
+    private void RebuildLayoutLocked(IReadOnlyList<LayoutEntry> entries) =>
+        _layout = entries.Select(e => e.Id == _self ? e with { Screen = new PcScreen(_localMonitors, _localScale) } : e).ToArray();
 
-    public void SetPeerScreens(Guid id, ScreenRect[] monitors)
-    {
-        lock (_gate)
-        {
-            var s = Get(id);
-            s.Monitors = monitors;
-            if (_controlling == id && monitors.Length > 0) (_rx, _ry) = Clamp(monitors, _rx, _ry).Point;
-        }
-    }
+    private ScreenRect[]? Monitors(Guid id) => _layout.FirstOrDefault(e => e.Id == id)?.Screen.Monitors;
+
+    public void RemovePeer(Guid id) => SetPeerConnected(id, false);
 
     public void SetPeerConnected(Guid id, bool connected)
     {
         lock (_gate)
         {
-            Get(id).Connected = connected;
-            if (connected) return;
+            if (connected) { _connected.Add(id); return; }
+            _connected.Remove(id);
             if (_controlling == id)
             {
                 // 보낼 수 없으므로 상대 쪽 키 떼기는 상대가 스스로 한다.
@@ -143,12 +142,8 @@ public sealed class InputRouter
         }
     }
 
-    private PeerState Get(Guid id)
-    {
-        if (!_peers.TryGetValue(id, out var s)) _peers[id] = s = new PeerState();
-        return s;
-    }
-
+    /// <summary>넘어갈 수 있는 PC(나 또는 연결되고 배치에 화면이 있는 PC).</summary>
+    private bool AvailableLocked(Guid id) => id == _self || (_connected.Contains(id) && Monitors(id) is { Length: > 0 });
     // ───────────── 상대가 나를 조작 ─────────────
 
     /// <summary>상대 PC가 나를 조작하기 시작했다(EnterControl 받음).</summary>
@@ -269,27 +264,32 @@ public sealed class InputRouter
         }
         if (dx == 0 && dy == 0) return true;
 
-        var peer = _peers[peerId];
-        if (peer.Monitors.Length == 0) return true;
+        if (Monitors(peerId) is not { Length: > 0 } monitors) return true;
         int nx = _rx + dx, ny = _ry + dy;
-        var (clamped, monitor) = Clamp(peer.Monitors, nx, ny);
-        var bounds = peer.Bounds;
+        var (clamped, monitor) = Clamp(monitors, nx, ny);
 
-        // 상대 화면에서 내 PC 쪽 가장자리를 밀면 돌아온다.
+        // 상대 화면 가장자리를 밀면 그쪽에 맞닿은 PC(내 PC 포함)로 넘어간다.
         if (!_edgeLocked && _remoteButtons.Count == 0)
         {
-            bool homeIsLeft = peer.Side == NeighborSide.Right; // 상대가 내 오른쪽이면 내 PC는 상대의 왼쪽
-            bool pushLeft = nx < clamped.X && monitor.X == bounds.X;
-            bool pushRight = nx > clamped.X && monitor.Right == bounds.Right;
-            if ((homeIsLeft && pushLeft) || (!homeIsLeft && pushRight))
+            PushDirection? dir = nx < clamped.X ? PushDirection.Left : nx > clamped.X ? PushDirection.Right
+                               : ny < clamped.Y ? PushDirection.Up : ny > clamped.Y ? PushDirection.Down : null;
+            if (dir is { } d && !InCornerDeadZone(monitor, clamped.X, clamped.Y, d)
+                && FindTargetLocked(peerId, monitor, clamped.X, clamped.Y, d) is { } target)
             {
-                var local = ScreenRect.Union(_localMonitors);
-                double t = bounds.Height <= 1 ? 0.5 : (double)(clamped.Y - bounds.Y) / (bounds.Height - 1);
-                int ly = local.Y + (int)Math.Round(t * (local.Height - 1));
-                int lx = homeIsLeft ? local.Right - 3 : local.X + 2;
-                var home = Clamp(_localMonitors, lx, ly).Point;
                 ReleaseRemoteLocked(peerId);
-                EndControlLocked(sendLeave: true, home);
+                if (target.Id == _self)
+                {
+                    EndControlLocked(sendLeave: true, (target.X, target.Y));
+                }
+                else
+                {
+                    _sink.Send(peerId, new LeaveControlMessage());
+                    _controlling = target.Id;
+                    (_rx, _ry) = (target.X, target.Y);
+                    _sink.Send(target.Id, new EnterControlMessage(_rx, _ry));
+                    _sink.SetLocalCursor(_park.X, _park.Y);
+                    _sink.ControllingChanged(target.Id);
+                }
                 return true;
             }
         }
@@ -306,25 +306,29 @@ public sealed class InputRouter
     private void TrySwitchAtEdgeLocked(int x, int y)
     {
         if (_edgeLocked || _localButtons.Count > 0) return;
-        var local = ScreenRect.Union(_localMonitors);
         var (_, m) = Clamp(_localMonitors, x, y);
-        if (y < m.Y + CornerDeadZone || y >= m.Bottom - CornerDeadZone) return;
+        // 그쪽에 내 다른 모니터가 이어지면 Windows 가 커서를 옮겨 주므로 가장자리가 아니다.
+        PushDirection? dir = null;
+        if (x >= m.Right - 1 && !InLocal(x + 1, y)) dir = PushDirection.Right;
+        else if (x <= m.X && !InLocal(x - 1, y)) dir = PushDirection.Left;
+        else if (y >= m.Bottom - 1 && !InLocal(x, y + 1)) dir = PushDirection.Down;
+        else if (y <= m.Y && !InLocal(x, y - 1)) dir = PushDirection.Up;
+        if (dir is not { } d || InCornerDeadZone(m, x, y, d)) return;
 
-        NeighborSide? side = null;
-        if (x >= m.Right - 1 && m.Right == local.Right) side = NeighborSide.Right;
-        else if (x <= m.X && m.X == local.X) side = NeighborSide.Left;
-        if (side is null) return;
-
-        var target = _peers.FirstOrDefault(p => p.Value.Side == side && p.Value.Connected && p.Value.Monitors.Length > 0);
-        if (target.Value is null) return;
-
-        var bounds = target.Value.Bounds;
-        double t = m.Height <= 1 ? 0.5 : (double)(y - m.Y) / (m.Height - 1);
-        int ry = bounds.Y + (int)Math.Round(t * (bounds.Height - 1));
-        int rx = side == NeighborSide.Right ? bounds.X + 1 : bounds.Right - 2;
-        BeginControlLocked(target.Key, Clamp(target.Value.Monitors, rx, ry).Point);
+        if (FindTargetLocked(_self, m, x, y, d) is not { } target || target.Id == _self) return;
+        BeginControlLocked(target.Id, (target.X, target.Y));
     }
 
+    private bool InLocal(int x, int y) => _localMonitors.Any(m => m.Contains(x, y));
+
+    /// <summary>모니터 모서리 근처(최대화 창의 닫기 버튼 등)에서는 넘어가지 않는다.</summary>
+    private bool InCornerDeadZone(ScreenRect m, int x, int y, PushDirection d) => d is PushDirection.Left or PushDirection.Right
+        ? y < m.Y + CornerDeadZone || y >= m.Bottom - CornerDeadZone
+        : x < m.X + CornerDeadZone || x >= m.Right - CornerDeadZone;
+
+    /// <summary>들어가는 자리: 내 PC는 가장자리에서 2픽셀, 다른 PC는 1픽셀 안쪽(돌아온 직후 곧바로 다시 넘어가지 않게).</summary>
+    private PushTarget? FindTargetLocked(Guid from, ScreenRect monitor, int x, int y, PushDirection d) =>
+        DeskLayout.FindTarget(_layout, from, monitor, x, y, d, AvailableLocked, id => id == _self ? 2 : 1);
     private void BeginControlLocked(Guid peer, (int X, int Y) entry)
     {
         _controlling = peer;
@@ -425,16 +429,11 @@ public sealed class InputRouter
         return false;
     }
 
-    /// <summary>PC 번호 순서: 1 = 내 PC, 그다음은 왼쪽 PC들, 오른쪽 PC들 순(같은 쪽은 이름순).</summary>
+    /// <summary>PC 번호 순서(2번부터): 배치에서 왼쪽부터, 같으면 위부터. 연결되지 않은 PC도 자리는 차지한다.</summary>
     public IReadOnlyList<Guid> JumpOrder()
     {
-        lock (_gate) return JumpOrderLocked();
+        lock (_gate) return DeskLayout.JumpOrder(_layout, _self);
     }
-
-    private List<Guid> JumpOrderLocked() =>
-        _peers.Where(p => p.Value.Connected && p.Value.Monitors.Length > 0)
-              .OrderBy(p => p.Value.Side).ThenBy(p => p.Value.Name, StringComparer.CurrentCulture).ThenBy(p => p.Key)
-              .Select(p => p.Key).ToList();
 
     private void JumpLocked(int index)
     {
@@ -443,15 +442,14 @@ public sealed class InputRouter
             if (_controlling is not null) EndControlLocked(sendLeave: true, _park);
             return;
         }
-        var order = JumpOrderLocked();
+        var order = DeskLayout.JumpOrder(_layout, _self);
         if (index - 1 >= order.Count) return;
         var target = order[index - 1];
-        if (_controlling == target) return;
+        if (_controlling == target || !AvailableLocked(target)) return;
         if (_controlling is not null) EndControlLocked(sendLeave: true, _park);
-        var first = _peers[target].Monitors[0];
+        var first = Monitors(target)![0];
         BeginControlLocked(target, (first.X + first.Width / 2, first.Y + first.Height / 2));
     }
-
     // ───────────── 좌표 도우미 ─────────────
 
     /// <summary>점을 가장 가까운 모니터 안으로 끌어온다. 끌어온 점과 그 모니터를 돌려준다.</summary>

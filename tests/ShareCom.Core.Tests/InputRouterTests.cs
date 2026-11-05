@@ -1,4 +1,5 @@
 using ShareCom.Core.Input;
+using ShareCom.Core.Layout;
 using ShareCom.Core.Protocol;
 
 namespace ShareCom.Core.Tests;
@@ -23,17 +24,25 @@ public sealed class FakeSink : IInputSink
 
 public class InputRouterTests
 {
+    private static readonly Guid Me = Guid.Parse("00000000-0000-0000-0000-000000000001");
     private static readonly Guid Peer = Guid.Parse("00000000-0000-0000-0000-000000000002");
     private static readonly Guid Other = Guid.Parse("00000000-0000-0000-0000-000000000003");
     private readonly FakeSink _sink = new();
     private readonly InputRouter _router;
 
+    private static LayoutEntry E(Guid id, int x, int y, ScreenRect monitor, int scale = 100) =>
+        new(id, id.ToString()[^1..], x, y, new PcScreen([monitor], scale));
+
+    private static readonly LayoutEntry MeEntry = E(Me, 0, 0, new(0, 0, 1920, 1080));
+    // 상대(1280×1024)는 내 오른쪽에 세로 가운데를 맞춰 놓는다.
+    private static readonly LayoutEntry PeerRight = E(Peer, 1920, 28, new(0, 0, 1280, 1024));
+
     public InputRouterTests()
     {
         _router = new InputRouter(_sink);
+        _router.SetSelf(Me);
         _router.SetLocalScreens([new ScreenRect(0, 0, 1920, 1080)]);
-        _router.SetPeer(Peer, "오른쪽 PC", NeighborSide.Right);
-        _router.SetPeerScreens(Peer, [new ScreenRect(0, 0, 1280, 1024)]);
+        _router.SetLayout([MeEntry, PeerRight]);
         _router.SetPeerConnected(Peer, true);
     }
 
@@ -49,7 +58,7 @@ public class InputRouterTests
         EnterRight();
         var enter = Assert.IsType<EnterControlMessage>(_sink.To(Peer).Last());
         Assert.Equal(1, enter.X);
-        Assert.InRange(enter.Y, 510, 513); // 540/1079 비율 → 1024 높이
+        Assert.Equal(512, enter.Y); // 배치 평면에서 같은 높이(540 - 28)
         Assert.True(_sink.Hidden);
         Assert.Equal((960, 540), _sink.Cursor); // 내 커서는 주 모니터 가운데에 숨긴다
         Assert.Equal(Peer, _sink.Controlling);
@@ -113,7 +122,7 @@ public class InputRouterTests
     [Fact]
     public void 왼쪽_이웃이면_왼쪽_가장자리에서_넘어가_오른쪽_끝에_들어간다()
     {
-        _router.SetPeer(Peer, "왼쪽 PC", NeighborSide.Left);
+        _router.SetLayout([MeEntry, E(Peer, -1280, 28, new(0, 0, 1280, 1024))]);
         Assert.True(_router.OnMouseMove(0, 540, false));
         var enter = Assert.IsType<EnterControlMessage>(_sink.To(Peer).Last());
         Assert.Equal(1278, enter.X);
@@ -215,10 +224,9 @@ public class InputRouterTests
     [Fact]
     public void Ctrl_Alt_숫자로_PC를_바로_고른다()
     {
-        _router.SetPeer(Other, "왼쪽 PC", NeighborSide.Left);
-        _router.SetPeerScreens(Other, [new ScreenRect(0, 0, 800, 600)]);
+        _router.SetLayout([MeEntry, PeerRight, E(Other, -800, 240, new(0, 0, 800, 600))]);
         _router.SetPeerConnected(Other, true);
-        Assert.Equal([Other, Peer], _router.JumpOrder()); // 왼쪽 PC가 2번, 오른쪽 PC가 3번
+        Assert.Equal([Other, Peer], _router.JumpOrder()); // 배치에서 왼쪽부터: 왼쪽 PC가 2번, 오른쪽 PC가 3번
 
         _router.OnKey(InputRouter.VkLControl, 0x1D, false, true, false);
         _router.OnKey(InputRouter.VkLMenu, 0x38, false, true, false);
@@ -287,9 +295,85 @@ public class InputRouterTests
     public void 모니터가_여럿이면_가장_바깥_모니터의_가장자리에서만_넘어간다()
     {
         _router.SetLocalScreens([new ScreenRect(0, 0, 1920, 1080), new ScreenRect(1920, 0, 1280, 720)]);
+        _router.SetLayout([MeEntry, E(Peer, 3200, 0, new(0, 0, 1280, 1024))]);
         Assert.False(_router.OnMouseMove(1919, 540, false)); // 두 모니터 사이
+        Assert.False(_router.OnMouseMove(1919, 900, false)); // 첫 모니터 오른쪽 아래: 맞닿은 PC가 없다
         Assert.Null(_router.Controlling);
         Assert.True(_router.OnMouseMove(3199, 360, false));
         Assert.Equal(Peer, _router.Controlling);
+    }
+
+    private void Push(int dx, int dy, int times)
+    {
+        for (int i = 0; i < times; i++) _router.OnMouseMove(960 + dx, 540 + dy, false);
+    }
+
+    [Fact]
+    public void 조작하던_PC의_반대쪽_가장자리를_밀면_그_옆_PC로_바로_넘어간다()
+    {
+        // 나 | Peer(1280×1024) | Other(800×600)
+        _router.SetLayout([MeEntry, PeerRight, E(Other, 3200, 240, new(0, 0, 800, 600))]);
+        _router.SetPeerConnected(Other, true);
+        EnterRight();
+        Push(150, 0, 10);
+        Assert.Equal(Other, _router.Controlling);
+        Assert.IsType<LeaveControlMessage>(_sink.To(Peer).Last());
+        Assert.Equal(new EnterControlMessage(1, 300), _sink.To(Other).OfType<EnterControlMessage>().Single()); // 평면 높이 540 → Other 안에서 300
+        Assert.Equal(Other, _sink.Controlling);
+
+        // 왼쪽으로 밀면 내 PC가 아니라 Peer 로 간다.
+        Push(-50, 0, 4);
+        Assert.Equal(Peer, _router.Controlling);
+        Assert.Equal(1278, ((EnterControlMessage)_sink.To(Peer).Last()).X);
+    }
+
+    [Fact]
+    public void 연결되지_않은_PC_쪽은_벽이다()
+    {
+        _router.SetLayout([MeEntry, PeerRight, E(Other, 3200, 240, new(0, 0, 800, 600))]);
+        EnterRight();
+        Push(150, 0, 12);
+        Assert.Equal(Peer, _router.Controlling);
+        Assert.Equal(1279, ((MouseMoveMessage)_sink.To(Peer).Last()).X);
+    }
+
+    [Fact]
+    public void 아래에_놓은_PC로는_아래_가장자리에서_넘어간다()
+    {
+        _router.SetLayout([MeEntry, E(Other, 0, 1080, new(0, 0, 1920, 1080))]);
+        _router.SetPeerConnected(Other, true);
+        Assert.False(_router.OnMouseMove(5, 1079, false)); // 모서리 근처는 넘어가지 않는다
+        Assert.True(_router.OnMouseMove(960, 1079, false));
+        Assert.Equal(Other, _router.Controlling);
+        Assert.Equal(new EnterControlMessage(960, 1), _sink.To(Other).Last());
+        Push(0, -10, 1);
+        Assert.Null(_router.Controlling);
+        Assert.Equal((960, 1077), _sink.Cursor);
+    }
+
+    [Fact]
+    public void 배율이_다른_PC는_논리_크기로_맞춰_넘어간다()
+    {
+        // 4K 200% 모니터는 평면에서 1920×1080 크기다.
+        _router.SetLayout([MeEntry, E(Peer, 1920, 0, new(0, 0, 3840, 2160), scale: 200)]);
+        Assert.True(_router.OnMouseMove(1919, 540, false));
+        Assert.Equal(new EnterControlMessage(1, 1081), _sink.To(Peer).Last());
+    }
+
+    [Fact]
+    public void 맞닿은_구간_밖에서_밀어도_가장_가까운_끝으로_넘어간다()
+    {
+        // 상대는 내 오른쪽 위 600 픽셀만 맞닿는다.
+        _router.SetLayout([MeEntry, E(Peer, 1920, 0, new(0, 0, 800, 600))]);
+        Assert.True(_router.OnMouseMove(1919, 900, false));
+        Assert.Equal(new EnterControlMessage(1, 599), _sink.To(Peer).Last());
+    }
+
+    [Fact]
+    public void 배치에_없는_PC로는_넘어가지_않는다()
+    {
+        _router.SetLayout([MeEntry]);
+        Assert.False(_router.OnMouseMove(1919, 540, false));
+        Assert.Null(_router.Controlling);
     }
 }
