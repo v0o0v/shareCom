@@ -36,7 +36,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private LayoutEditorForm? _layoutEditor;
     private Guid? _controlling;
 
-    public TrayApp()
+    public TrayApp(bool startedAtLogon = false)
     {
         _ui = new Control();
         _ui.CreateControl(); // UI 스레드로 넘기는 BeginInvoke 용
@@ -46,12 +46,16 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         _store = new JsonPeerStore(_storage);
         Log.Info($"시작: {_identity.Name} ({_identity.Id}), 지문 {_identity.Thumbprint[..16]}…, 관리자={SystemSetup.IsAdministrator()}");
 
-        _router = new InputRouter(this) { EdgeLocked = _storage.Settings.EdgeLocked };
+        _router = new InputRouter(this)
+        {
+            EdgeLocked = _storage.Settings.EdgeLocked,
+            Hotkeys = _storage.Settings.Hotkeys ?? HotkeySettings.Default,
+        };
         _router.EdgeLockChanged += locked =>
         {
             _storage.Settings.EdgeLocked = locked;
             SaveSettings();
-            Notify(locked ? "가장자리 넘기기를 잠갔습니다. (Scroll Lock 으로 풀기)" : "가장자리 넘기기 잠금을 풀었습니다.");
+            Notify(locked ? $"가장자리 넘기기를 잠갔습니다. ({HotkeySettings.LockKeyName(_router.Hotkeys.LockKey)} 로 풀기)" : "가장자리 넘기기 잠금을 풀었습니다.");
         };
         _router.SetSelf(_identity.Id);
         _router.SetLocalScreens(LocalMonitors(), Win32.PrimaryScalePercent());
@@ -113,9 +117,66 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         }
         Task.Run(SystemSetup.EnsureFirewallRule);
         UpdateTrayState();
-        Notify(_store.GetAll().Count == 0
-            ? "실행 중입니다. 트레이 아이콘을 눌러 다른 PC와 짝을 맺으세요."
-            : "실행 중입니다. 짝 맺은 PC에 연결합니다.");
+        if (!startedAtLogon)
+            Notify(_store.GetAll().Count == 0
+                ? "실행 중입니다. 트레이 아이콘을 눌러 다른 PC와 짝을 맺으세요."
+                : "실행 중입니다. 짝 맺은 PC에 연결합니다.");
+        else
+            Log.Info("로그인 자동 시작으로 실행했습니다.");
+        _ui.BeginInvoke(CheckAutoStart);
+    }
+
+    /// <summary>
+    /// 첫 실행이면 자동 시작을 켤지 한 번 묻는다. 이미 켜 두었는데 exe 를 옮겼으면 새 경로로 다시 등록한다.
+    /// </summary>
+    private void CheckAutoStart()
+    {
+        if (!SystemSetup.IsAdministrator()) return; // 개발용(NoAdmin) 실행은 등록할 수 없다
+        var exe = Environment.ProcessPath;
+        if (exe is null) return;
+        var settings = _storage.Settings;
+        if (!settings.AutoStartAsked)
+        {
+            settings.AutoStartAsked = true;
+            SaveSettings();
+            var answer = MessageBox.Show(
+                "Windows 에 로그인할 때 ShareCom 을 자동으로 켤까요?\n" +
+                "켜 두면 PC를 다시 켜도 따로 실행하지 않아도 다른 PC와 다시 연결됩니다.\n\n" +
+                "나중에 트레이 메뉴 [설정…]에서 바꿀 수 있습니다.",
+                "ShareCom 자동 시작", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (answer == DialogResult.Yes) SetAutoStart(true, showErrors: true);
+            return;
+        }
+        if (!string.Equals(settings.AutoStartPath, exe, StringComparison.OrdinalIgnoreCase))
+        {
+            _ = Task.Run(() =>
+            {
+                if (!AutoStart.IsRegistered()) return;
+                Log.Info($"exe 위치가 바뀌어 자동 시작을 다시 등록합니다: {settings.AutoStartPath} → {exe}");
+                if (AutoStart.Register(exe) is null)
+                {
+                    settings.AutoStartPath = exe;
+                    SaveSettings();
+                }
+            });
+        }
+    }
+
+    /// <summary>자동 시작을 켜거나 끈다. 실패하면 false.</summary>
+    private bool SetAutoStart(bool enabled, bool showErrors)
+    {
+        var exe = Environment.ProcessPath;
+        string? error = enabled
+            ? (exe is null ? "실행 파일 경로를 알 수 없습니다." : AutoStart.Register(exe))
+            : AutoStart.Unregister();
+        if (error is null)
+        {
+            _storage.Settings.AutoStartPath = enabled ? exe : null;
+            SaveSettings();
+            return true;
+        }
+        if (showErrors) MessageBox.Show(error, "ShareCom 자동 시작", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return false;
     }
 
     // ───────────── IInputSink ─────────────
@@ -506,7 +567,9 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         menu.Items.Add(received);
         menu.Items.Add(new ToolStripSeparator());
 
-        var edge = new ToolStripMenuItem("가장자리 넘기기 잠금 (Scroll Lock)") { Checked = _router.EdgeLocked };
+        var hotkeys = _router.Hotkeys;
+        var edgeText = hotkeys.LockKey == 0 ? "가장자리 넘기기 잠금" : $"가장자리 넘기기 잠금 ({HotkeySettings.LockKeyName(hotkeys.LockKey)})";
+        var edge = new ToolStripMenuItem(edgeText) { Checked = _router.EdgeLocked };
         edge.Click += (_, _) =>
         {
             _router.EdgeLocked = !_router.EdgeLocked;
@@ -524,20 +587,13 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         };
         menu.Items.Add(clipboard);
 
-        var encryption = new ToolStripMenuItem("암호화") { Checked = _node.EncryptionEnabled };
-        encryption.Click += (_, _) => ToggleEncryption();
-        menu.Items.Add(encryption);
-
         var help = new ToolStripMenuItem("단축키 보기");
-        help.Click += (_, _) => MessageBox.Show(
-            "Scroll Lock  : 가장자리 넘기기 잠금 켜기/끄기\n" +
-            "Ctrl+Alt+1   : 내 PC로\n" +
-            "Ctrl+Alt+2~4 : 다른 PC로 바로 이동 (화면 배치에서 왼쪽 PC부터 차례로 번호)\n" +
-            "Ctrl+Alt+Esc : 긴급 복귀 (무조건 내 PC로)\n\n" +
-            "다른 PC를 조작하는 중에 그 PC의 마우스·키보드를 쓰면 그 PC가 주인을 되찾습니다.\n" +
-            "Ctrl+Alt+Del 과 UAC 창·잠금 화면은 해당 PC에서 직접 조작해야 합니다.",
-            "ShareCom 단축키", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        help.Click += (_, _) => MessageBox.Show(HotkeyHelp(_router.Hotkeys), "ShareCom 단축키", MessageBoxButtons.OK, MessageBoxIcon.Information);
         menu.Items.Add(help);
+
+        var settings = new ToolStripMenuItem("설정…");
+        settings.Click += (_, _) => OpenSettings();
+        menu.Items.Add(settings);
 
         var logs = new ToolStripMenuItem("기록 폴더 열기");
         logs.Click += (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_storage.Directory}\"") { UseShellExecute = true });
@@ -575,9 +631,86 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         if (answer == DialogResult.OK) _trust.Unpair(p.Id);
     }
 
-    private void ToggleEncryption()
+    private static string HotkeyHelp(HotkeySettings h)
     {
-        bool next = !_node.EncryptionEnabled;
+        var lines = new List<string>
+        {
+            h.LockKey == 0
+                ? "가장자리 넘기기 잠금 : (단축키 쓰지 않음, 트레이 메뉴에서)"
+                : $"{HotkeySettings.LockKeyName(h.LockKey)} : 가장자리 넘기기 잠금 켜기/끄기",
+        };
+        if (h.JumpModifiers == HotkeyModifiers.None)
+            lines.Add("PC 바로 이동 : (쓰지 않음)");
+        else
+        {
+            var m = HotkeySettings.ModifiersName(h.JumpModifiers);
+            lines.Add($"{m}+1 : 내 PC로");
+            lines.Add($"{m}+2~4 : 다른 PC로 바로 이동 (화면 배치에서 왼쪽 PC부터 차례로 번호)");
+        }
+        lines.Add("Ctrl+Alt+Esc : 긴급 복귀 (무조건 내 PC로)");
+        lines.Add("");
+        lines.Add("단축키는 트레이 메뉴 [설정…]에서 바꿀 수 있습니다.");
+        lines.Add("다른 PC를 조작하는 중에 그 PC의 마우스·키보드를 쓰면 그 PC가 주인을 되찾습니다.");
+        lines.Add("Ctrl+Alt+Del 과 UAC 창·잠금 화면은 해당 PC에서 직접 조작해야 합니다.");
+        return string.Join("\n", lines);
+    }
+
+    private SettingsForm? _settingsForm;
+
+    private void OpenSettings()
+    {
+        if (_settingsForm is { IsDisposed: false })
+        {
+            _settingsForm.Activate();
+            return;
+        }
+        var values = new SettingsValues(
+            AutoStart.IsRegistered(),
+            _clipboard.Enabled,
+            _node.EncryptionEnabled,
+            _router.EdgeLocked,
+            _router.Hotkeys);
+        var version = typeof(TrayApp).Assembly.GetName().Version?.ToString(3) ?? "?";
+        var info = new SettingsInfo(_identity.Name, _identity.Thumbprint[..16] + "…", version, SystemSetup.IsAdministrator());
+        using var form = new SettingsForm(values, info,
+            () => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_storage.Directory}\"") { UseShellExecute = true }));
+        _settingsForm = form;
+        try
+        {
+            if (form.ShowDialog() == DialogResult.OK && form.Result is { } next) ApplySettings(values, next);
+        }
+        finally
+        {
+            _settingsForm = null;
+        }
+    }
+
+    private void ApplySettings(SettingsValues before, SettingsValues next)
+    {
+        if (next.AutoStart != before.AutoStart) SetAutoStart(next.AutoStart, showErrors: true);
+        if (next.ClipboardEnabled != before.ClipboardEnabled)
+        {
+            _clipboard.Enabled = next.ClipboardEnabled;
+            _storage.Settings.ClipboardEnabled = next.ClipboardEnabled;
+        }
+        if (next.EdgeLocked != before.EdgeLocked)
+        {
+            _router.EdgeLocked = next.EdgeLocked;
+            _storage.Settings.EdgeLocked = next.EdgeLocked;
+        }
+        if (next.Hotkeys != before.Hotkeys)
+        {
+            _router.Hotkeys = next.Hotkeys;
+            _storage.Settings.Hotkeys = _router.Hotkeys;
+            Log.Info($"단축키 변경: 잠금 {HotkeySettings.LockKeyName(_router.Hotkeys.LockKey)}, 바로 이동 {HotkeySettings.ModifiersName(_router.Hotkeys.JumpModifiers)}");
+        }
+        SaveSettings();
+        if (next.EncryptionEnabled != before.EncryptionEnabled) SetEncryption(next.EncryptionEnabled);
+    }
+
+    private void SetEncryption(bool next)
+    {
+        if (next == _node.EncryptionEnabled) return;
         if (!next)
         {
             var answer = MessageBox.Show(

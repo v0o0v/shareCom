@@ -26,6 +26,13 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             return SelfTest.RenderLayoutEditor(args[1]);
         }
+        if (args.Length == 2 && args[0] == "--selftest-settings")
+        {
+            ApplicationConfiguration.Initialize();
+            return SelfTest.RenderSettings(args[1]);
+        }
+        if (args.Length == 2 && args[0] == "--selftest-autostart")
+            return SelfTest.RunAutoStart(args[1]);
 
         using var mutex = new Mutex(true, @"Global\ShareCom-SingleInstance-v1", out bool first);
         if (!first)
@@ -53,7 +60,7 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         try
         {
-            using var app = new TrayApp();
+            using var app = new TrayApp(startedAtLogon: args.Contains(AutoStart.Argument));
             Application.Run(app);
         }
         catch (Exception ex)
