@@ -16,7 +16,7 @@ public class ClipboardTests
         public List<ClipboardContent> Written { get; } = new();
         public IReadOnlyList<Guid> ConnectedPeers => Peers;
         public void SendToPeer(Guid peer, byte[] payload) => Sent.Add((peer, payload));
-        public void WriteLocal(ClipboardContent content) => Written.Add(content);
+        public void WriteLocal(Guid fromPeer, ClipboardContent content) => Written.Add(content);
     }
 
     private static ClipboardContent Text(string s) =>

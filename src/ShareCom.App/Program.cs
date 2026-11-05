@@ -8,10 +8,18 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // 탐색기(보통 권한)가 관리자 권한인 이 프로세스의 가상 파일을 읽을 수 있게 한다. 가장 먼저 불러야 한다.
+        ComSecurity.AllowMediumIntegrityCallers();
+
         if (args.Length == 2 && args[0] == "--selftest-clipboard")
         {
             ApplicationConfiguration.Initialize();
             return SelfTest.RunClipboard(args[1]);
+        }
+        if (args.Length == 3 && args[0] == "--selftest-files")
+        {
+            ApplicationConfiguration.Initialize();
+            return SelfTest.ServeFiles(args[1], int.Parse(args[2]));
         }
 
         using var mutex = new Mutex(true, @"Global\ShareCom-SingleInstance-v1", out bool first);

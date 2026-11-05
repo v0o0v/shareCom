@@ -6,6 +6,7 @@ using ShareCom.App.Input;
 using ShareCom.App.Native;
 using ShareCom.App.UI;
 using ShareCom.Core.Clipboard;
+using ShareCom.Core.Files;
 using ShareCom.Core.Identity;
 using ShareCom.Core.Input;
 using ShareCom.Core.Net;
@@ -15,7 +16,7 @@ using Message = ShareCom.Core.Protocol.Message;
 namespace ShareCom.App;
 
 /// <summary>트레이에 상주하며 통신(Node)·입력 라우팅(InputRouter)·입력 훅·입력 재현을 잇는다.</summary>
-internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransport
+internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransport, IFileTransport
 {
     private readonly AppStorage _storage;
     private readonly JsonPeerStore _store;
@@ -28,6 +29,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private readonly Control _ui;
     private readonly ClipboardSync _clipboard;
     private readonly ClipboardWatcher _clipboardWatcher;
+    private readonly FileTransferService _files;
     private Guid? _controlling;
 
     public TrayApp()
@@ -59,6 +61,10 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         _node.PairingConfirmer = ConfirmPairingAsync;
         _node.PairingCompleted += OnPairingCompleted;
         _node.BlobReceived += OnBlob;
+
+        _files = new FileTransferService(this);
+        _files.Log += Log.Info;
+        _files.SendRequested += OnIncomingFiles;
 
         _clipboard = new ClipboardSync(this) { Enabled = _storage.Settings.ClipboardEnabled };
         _clipboardWatcher = new ClipboardWatcher();
@@ -120,9 +126,19 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
 
     void IClipboardTransport.SendToPeer(Guid peer, byte[] payload) => _node.SendBlob(peer, BlobKind.Clipboard, payload);
 
-    void IClipboardTransport.WriteLocal(ClipboardContent content) => _ui.BeginInvoke(() =>
+    void IClipboardTransport.WriteLocal(Guid fromPeer, ClipboardContent content) => _ui.BeginInvoke(() =>
     {
         _clipboardWatcher.MarkSelfWrite();
+        if (content.Get(ClipboardFormats.Files) is { } files)
+        {
+            // 파일은 목록만 클립보드에 올리고, 탐색기에서 붙여넣을 때 원본 PC에서 받아온다.
+            var offer = FileOffer.Decode(files.Data);
+            var peerName = _store.Get(fromPeer)?.Name ?? "PC";
+            OleClipboard.Set(new VirtualFileDataObject(offer,
+                index => _files.OpenRemote(fromPeer, offer.Id, index, offer.Entries[index].Size), peerName));
+            Log.Info($"클립보드 받음: '{peerName}' 의 파일 {offer.FileCount}개({FormatBytes(offer.TotalBytes)}) - 붙여넣을 때 받습니다");
+            return;
+        }
         ClipboardIo.Write(content);
         Log.Info($"클립보드 받음: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
     });
@@ -131,6 +147,22 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private void OnLocalClipboardChanged()
     {
         if (!_clipboard.Enabled || _node.ConnectedPeers.Count == 0) return;
+        if (TryReadFileDrop() is { } paths)
+        {
+            // 탐색기에서 파일을 복사했다: 목록(제안)만 만들어 보낸다. 폴더 펼치기는 다른 스레드에서.
+            Task.Run(() =>
+            {
+                try
+                {
+                    var offer = _files.RegisterOffer(paths);
+                    if (offer.Entries.Count == 0) return;
+                    _clipboard.OnLocalChanged(new ClipboardContent([new ClipboardItem(ClipboardFormats.Files, offer.Encode())]));
+                    Log.Info($"파일 복사 알림 보냄: {offer.FileCount}개, {FormatBytes(offer.TotalBytes)}");
+                }
+                catch (Exception ex) { Log.Error("파일 목록 만들기 실패", ex); }
+            });
+            return;
+        }
         var content = ClipboardIo.Read();
         if (content is null) return;
         Task.Run(() =>
@@ -146,8 +178,24 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         });
     }
 
+    private static string[]? TryReadFileDrop()
+    {
+        try
+        {
+            if (!System.Windows.Forms.Clipboard.ContainsFileDropList()) return null;
+            var list = System.Windows.Forms.Clipboard.GetFileDropList();
+            return list.Count == 0 ? null : list.Cast<string>().ToArray();
+        }
+        catch { return null; }
+    }
+
     private void OnBlob(Guid peer, BlobKind kind, byte[] data)
     {
+        if (kind == BlobKind.FileSendRequest)
+        {
+            _files.OnBlob(peer, kind, data);
+            return;
+        }
         if (kind != BlobKind.Clipboard) return;
         // 받는 루프(마우스·키보드도 같이 받는다)를 붙잡지 않게 다른 스레드에서 푼다.
         Task.Run(() =>
@@ -157,12 +205,107 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         });
     }
 
-    private static string FormatBytes(long n) => n switch
+    private static string FormatBytes(long n) => Sizes.Format(n);
+
+    private static void OpenFolder(string dir)
     {
-        < 1024 => $"{n}B",
-        < 1024 * 1024 => $"{n / 1024.0:0.#}KB",
-        _ => $"{n / 1024.0 / 1024.0:0.#}MB",
-    };
+        Directory.CreateDirectory(dir);
+        Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dir + "\"") { UseShellExecute = true });
+    }
+
+    // ───────────── 파일 ─────────────
+
+    bool IFileTransport.Send(Guid peer, Message message) => _node.Send(peer, message);
+    bool IFileTransport.SendBulk(Guid peer, Message message) => _node.SendBulk(peer, message);
+    bool IFileTransport.SendBlob(Guid peer, BlobKind kind, byte[] data) => _node.SendBlob(peer, kind, data);
+
+    /// <summary>트레이 메뉴에서 고른 파일·폴더를 peer 로 보낸다. 상대가 [받기]를 누르면 상대가 끌어간다.</summary>
+    private void SendFiles(Guid peer, string[] paths)
+    {
+        var name = _store.Get(peer)?.Name ?? "PC";
+        Notify($"'{name}' 에 받을지 묻는 중입니다…");
+        Task.Run(async () =>
+        {
+            try
+            {
+                var (accepted, offer) = await _files.RequestSendAsync(peer, paths);
+                if (!accepted)
+                {
+                    Notify($"'{name}' 쪽에서 받기를 거절했습니다.");
+                    return;
+                }
+                Notify($"'{name}' 로 보내는 중: 파일 {offer.FileCount}개, {FormatBytes(offer.TotalBytes)}");
+                var (ok, error) = await _files.WaitResultAsync(offer.Id);
+                Notify(ok ? $"'{name}' 로 다 보냈습니다." : $"'{name}' 로 보내지 못했습니다: {error}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("파일 보내기 실패", ex);
+                Notify($"파일을 보내지 못했습니다: {ex.Message}");
+            }
+        });
+    }
+
+    private void OnIncomingFiles(Guid peer, FileOffer offer)
+    {
+        var name = _store.Get(peer)?.Name ?? "PC";
+        var folder = KnownFolders.ShareComDownloads();
+        _ui.BeginInvoke(() =>
+        {
+            var ask = new IncomingFilesForm(name, offer, folder);
+            ask.FormClosed += (_, _) =>
+            {
+                _files.Respond(peer, offer.Id, ask.Accepted);
+                if (!ask.Accepted) return;
+                var progress = new TransferProgressForm($"'{name}' 에서 받는 중");
+                progress.Show();
+                var reporter = new Progress<FileProgress>(progress.Report); // UI 스레드에서 만들었으므로 UI 스레드로 넘어온다
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _files.ReceiveToFolderAsync(peer, offer, folder, reporter, progress.Token);
+                        Notify($"'{name}' 에서 파일 {offer.FileCount}개를 받았습니다. 트레이 메뉴 [받은 파일 폴더 열기]로 볼 수 있습니다.");
+                    }
+                    catch (OperationCanceledException) { Notify("파일 받기를 취소했습니다."); }
+                    catch (Exception ex)
+                    {
+                        Log.Error("파일 받기 실패", ex);
+                        Notify($"파일을 받지 못했습니다: {ex.Message}");
+                    }
+                    finally { _ui.BeginInvoke(progress.Finish); }
+                });
+            };
+            ask.Show();
+            ask.Activate();
+        });
+    }
+
+    private ToolStripMenuItem BuildSendMenu()
+    {
+        var send = new ToolStripMenuItem("파일 보내기");
+        var peers = _node.ConnectedPeers.Select(id => _store.Get(id)).OfType<PeerRecord>().OrderBy(p => p.Name).ToList();
+        if (peers.Count == 0) send.DropDownItems.Add(new ToolStripMenuItem("(연결된 PC가 없습니다)") { Enabled = false });
+        foreach (var p in peers)
+        {
+            var item = new ToolStripMenuItem(p.Name);
+            var files = new ToolStripMenuItem("파일 고르기…");
+            files.Click += (_, _) =>
+            {
+                using var dlg = new OpenFileDialog { Multiselect = true, Title = $"'{p.Name}' 로 보낼 파일" };
+                if (dlg.ShowDialog() == DialogResult.OK) SendFiles(p.Id, dlg.FileNames);
+            };
+            var folder = new ToolStripMenuItem("폴더 고르기…");
+            folder.Click += (_, _) =>
+            {
+                using var dlg = new FolderBrowserDialog { Description = $"'{p.Name}' 로 보낼 폴더", UseDescriptionForTitle = true, Multiselect = true };
+                if (dlg.ShowDialog() == DialogResult.OK) SendFiles(p.Id, dlg.SelectedPaths);
+            };
+            item.DropDownItems.AddRange([files, folder]);
+            send.DropDownItems.Add(item);
+        }
+        return send;
+    }
 
     // ───────────── 통신 이벤트 ─────────────
 
@@ -178,6 +321,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private void OnPeerDisconnected(Guid peer)
     {
         _router.SetPeerConnected(peer, false);
+        _files.OnPeerDisconnected(peer);
         var name = _store.Get(peer)?.Name;
         if (name is not null) Notify($"'{name}' 와 연결이 끊겼습니다. 다시 연결을 시도합니다.");
         _ui.BeginInvoke(UpdateTrayState);
@@ -185,6 +329,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
 
     private void OnMessage(Guid peer, Message message)
     {
+        if (_files.OnMessage(peer, message)) return;
         switch (message)
         {
             case ScreenInfoMessage s:
@@ -329,6 +474,12 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         menu.Items.Add(pairMenu);
         menu.Items.Add(new ToolStripSeparator());
 
+        menu.Items.Add(BuildSendMenu());
+        var received = new ToolStripMenuItem("받은 파일 폴더 열기");
+        received.Click += (_, _) => OpenFolder(KnownFolders.ShareComDownloads());
+        menu.Items.Add(received);
+        menu.Items.Add(new ToolStripSeparator());
+
         var edge = new ToolStripMenuItem("가장자리 넘기기 잠금 (Scroll Lock)") { Checked = _router.EdgeLocked };
         edge.Click += (_, _) =>
         {
@@ -464,6 +615,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             _router.ReturnHome();
             _hooks.Dispose();
             _clipboardWatcher.Dispose();
+            OleClipboard.ReleaseIfOwned();
             _injector.ReleaseAll();
             CursorHider.RestoreNow();
             try { _node.DisposeAsync().AsTask().Wait(2000); } catch { }

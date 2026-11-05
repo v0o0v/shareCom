@@ -92,6 +92,13 @@ public static class MessageCodec
             case MouseWheelMessage x: w.Write(x.Delta); w.Write(x.Horizontal); break;
             case KeyMessage x: w.Write(x.VirtualKey); w.Write(x.ScanCode); w.Write(x.Extended); w.Write(x.Down); break;
             case TakeOverMessage: break;
+            case FileOpenMessage x: w.Write(x.RequestId); w.Write(x.OfferId.ToByteArray()); w.Write(x.Index); w.Write(x.Offset); break;
+            case FileChunkMessage x: w.Write(x.RequestId); WriteBytes(w, x.Data); w.Write(x.Last); break;
+            case FileAckMessage x: w.Write(x.RequestId); w.Write(x.Consumed); break;
+            case FileErrorMessage x: w.Write(x.RequestId); w.Write(x.Error); break;
+            case FileCancelMessage x: w.Write(x.RequestId); break;
+            case FileSendResponseMessage x: w.Write(x.OfferId.ToByteArray()); w.Write(x.Accepted); break;
+            case FileSendResultMessage x: w.Write(x.OfferId.ToByteArray()); w.Write(x.Success); w.Write(x.Error); break;
             case BlobChunkMessage x:
                 w.Write(x.BlobId); w.Write((byte)x.Kind); w.Write(x.TotalLength); w.Write(x.Offset); WriteBytes(w, x.Data); break;
             default: throw new NotSupportedException($"알 수 없는 메시지: {m.GetType().Name}");
@@ -114,6 +121,13 @@ public static class MessageCodec
         MessageType.MouseWheel => new MouseWheelMessage(r.ReadInt32(), r.ReadBoolean()),
         MessageType.Key => new KeyMessage(r.ReadUInt16(), r.ReadUInt16(), r.ReadBoolean(), r.ReadBoolean()),
         MessageType.TakeOver => new TakeOverMessage(),
+        MessageType.FileOpen => new FileOpenMessage(r.ReadUInt32(), new Guid(r.ReadBytes(16)), r.ReadInt32(), r.ReadInt64()),
+        MessageType.FileChunk => new FileChunkMessage(r.ReadUInt32(), ReadBytes(r), r.ReadBoolean()),
+        MessageType.FileAck => new FileAckMessage(r.ReadUInt32(), r.ReadInt64()),
+        MessageType.FileError => new FileErrorMessage(r.ReadUInt32(), r.ReadString()),
+        MessageType.FileCancel => new FileCancelMessage(r.ReadUInt32()),
+        MessageType.FileSendResponse => new FileSendResponseMessage(new Guid(r.ReadBytes(16)), r.ReadBoolean()),
+        MessageType.FileSendResult => new FileSendResultMessage(new Guid(r.ReadBytes(16)), r.ReadBoolean(), r.ReadString()),
         MessageType.BlobChunk => new BlobChunkMessage(r.ReadUInt32(), (BlobKind)r.ReadByte(), r.ReadInt64(), r.ReadInt64(), ReadBytes(r)),
         _ => throw new InvalidDataException($"알 수 없는 메시지 종류: {(byte)type}"),
     };
