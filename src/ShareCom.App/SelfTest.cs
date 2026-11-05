@@ -38,9 +38,10 @@ internal static class SelfTest
     /// <summary><c>ShareCom.exe --selftest-settings 그림.png</c>: 설정 창을 그림으로 저장한다.</summary>
     public static int RenderSettings(string outputPath)
     {
-        var values = new UI.SettingsValues(true, true, true, false, ShareCom.Core.Input.HotkeySettings.Default);
-        var info = new UI.SettingsInfo(Environment.MachineName, "FDD14CBB08F8C2A9…", "0.5.0", Infra.SystemSetup.IsAdministrator());
-        using var form = new UI.SettingsForm(values, info, () => { });
+        var values = new UI.SettingsValues(true, true, true, false, ShareCom.Core.Input.HotkeySettings.Default, true);
+        var info = new UI.SettingsInfo(Environment.MachineName, "FDD14CBB08F8C2A9…", "0.6.0", Infra.SystemSetup.IsAdministrator(),
+            "최신 버전입니다(확인 17:40).");
+        using var form = new UI.SettingsForm(values, info, () => { }, () => Task.FromResult("최신 버전입니다."));
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-4000, -4000);
         form.Show();
@@ -229,5 +230,74 @@ internal static class SelfTest
             else System.Windows.Forms.Clipboard.SetDataObject(backup, copy: true, retryTimes: 5, retryDelay: 100);
         }
         catch { }
+    }
+
+    // ───────────── 업데이트 교체 ─────────────
+
+    /// <summary>
+    /// 이 환경 변수가 있으면 --after-update / --update-failed 로 켜진 프로세스가 트레이 앱 대신 시험용으로 움직인다.
+    /// 값: "ok|결과파일" (정상 시작 신호를 보낸다) 또는 "fail|결과파일" (신호 없이 바로 끝난다).
+    /// </summary>
+    public const string UpdateChildVariable = "SHARECOM_SELFTEST_UPDATE";
+
+    /// <summary>
+    /// <c>복사한폴더\ShareCom.exe --selftest-update 새exe 결과파일 ok|fail</c>: 실행 중인 자기 자신을 새 exe 로 바꾸고
+    /// 새 exe 를 띄워 신호를 기다린다. fail 이면 새 exe 가 신호 없이 꺼지므로 되돌리고 이전 exe 를 다시 띄워야 한다.
+    /// 결과 파일에 [OK]/[FAIL] 줄을 남긴다(새·이전 프로세스도 같은 파일에 덧붙인다).
+    /// </summary>
+    public static int RunUpdate(string newExe, string resultPath, bool fail)
+    {
+        var exe = Environment.ProcessPath!;
+        void Line(string text) => File.AppendAllText(resultPath, text + Environment.NewLine);
+        Environment.SetEnvironmentVariable(UpdateChildVariable, (fail ? "fail|" : "ok|") + resultPath);
+        string sha;
+        using (var fs = File.OpenRead(newExe)) sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs));
+        var payload = new ShareCom.Core.Update.UpdatePayload("ShareCom", "9.9.9", "v9.9.9", "ShareCom.exe", sha, new FileInfo(newExe).Length);
+        try
+        {
+            ShareCom.Core.Update.UpdateInstaller.Swap(exe, newExe, payload);
+            Line("[OK] parent: swapped running exe");
+        }
+        catch (Exception ex)
+        {
+            Line("[FAIL] parent: swap " + ex.Message);
+            return 1;
+        }
+        Line(File.Exists(ShareCom.Core.Update.UpdateInstaller.OldPath(exe)) ? "[OK] parent: old exe kept" : "[FAIL] parent: no old exe");
+        Infra.UpdateHandoff.Run(new Infra.PendingUpdate(exe, "9.9.9", new Uri("https://example.test/")),
+            v => { Line("[OK] parent: skip version " + v); return true; });
+        Line("parent: done");
+        return 0;
+    }
+
+    /// <summary>시험용 새 exe / 다시 띄운 이전 exe 의 동작.</summary>
+    public static int RunUpdateChild(string mode, string[] args)
+    {
+        var parts = mode.Split('|', 2);
+        var resultPath = parts.Length == 2 ? parts[1] : Path.Combine(Path.GetTempPath(), "sharecom-update-child.txt");
+        void Line(string text) => File.AppendAllText(resultPath, text + Environment.NewLine);
+        var exe = Environment.ProcessPath!;
+        int i = Array.IndexOf(args, Infra.UpdateHandoff.AfterUpdateArg);
+        if (i >= 0)
+        {
+            if (parts[0] == "fail")
+            {
+                Line("child: exiting without signal");
+                return 3;
+            }
+            Line($"[OK] child: started version {args.ElementAtOrDefault(i + 2)}");
+            Infra.UpdateHandoff.SignalStarted(args[i + 1]);
+            var cleaned = ShareCom.Core.Update.UpdateInstaller.Cleanup(exe);
+            Line(cleaned ? "[OK] child: old exe removed" : "[FAIL] child: old exe not removed");
+            return 0;
+        }
+        if (Array.IndexOf(args, Infra.UpdateHandoff.UpdateFailedArg) is var j and >= 0)
+        {
+            bool restored = !File.Exists(ShareCom.Core.Update.UpdateInstaller.OldPath(exe));
+            Line($"[OK] restarted: previous exe after rollback, version {args.ElementAtOrDefault(j + 1)}");
+            Line(restored ? "[OK] restarted: no old exe left" : "[FAIL] restarted: old exe still there");
+            return 0;
+        }
+        return 2;
     }
 }

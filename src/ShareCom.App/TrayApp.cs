@@ -12,9 +12,13 @@ using ShareCom.Core.Input;
 using ShareCom.Core.Layout;
 using ShareCom.Core.Net;
 using ShareCom.Core.Protocol;
+using ShareCom.Core.Update;
 using Message = ShareCom.Core.Protocol.Message;
 
 namespace ShareCom.App;
+
+/// <summary>시작 방식. 로그인 자동 시작인지, 업데이트 직후인지, 업데이트를 되돌린 뒤인지.</summary>
+internal sealed record StartupOptions(bool AtLogon = false, string? UpdatedEvent = null, string? UpdatedVersion = null, string? FailedVersion = null);
 
 /// <summary>트레이에 상주하며 통신(Node)·입력 라우팅(InputRouter)·입력 훅·입력 재현을 잇는다.</summary>
 internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransport, IFileTransport
@@ -33,11 +37,24 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private readonly FileTransferService _files;
     private readonly TrustSync _trust;
     private readonly LayoutSync _layout;
+    private readonly UpdateService _updates;
     private LayoutEditorForm? _layoutEditor;
     private Guid? _controlling;
+    /// <summary>마지막으로 조작을 시작·끝낸 시각. 끝난 뒤 5분은 업데이트하지 않는다.</summary>
+    private DateTime _lastControlUtc = DateTime.UtcNow;
+    /// <summary>알림 풍선을 누르면 열 주소(업데이트 알림일 때만).</summary>
+    private Uri? _balloonUrl;
+    /// <summary>설정 창에서 [업데이트]를 고른 업데이트. 창이 닫힌 뒤 적용한다.</summary>
+    private ReadyUpdate? _manualUpdate;
 
-    public TrayApp(bool startedAtLogon = false)
+    /// <summary>앱을 끈 뒤 Program 이 넘겨줄 업데이트. null 이면 그냥 끈다.</summary>
+    public PendingUpdate? PendingUpdate { get; private set; }
+
+    public static Version CurrentVersion => typeof(TrayApp).Assembly.GetName().Version ?? new Version(0, 0);
+
+    public TrayApp(StartupOptions? startup = null)
     {
+        startup ??= new StartupOptions();
         _ui = new Control();
         _ui.CreateControl(); // UI 스레드로 넘기는 BeginInvoke 용
 
@@ -98,6 +115,18 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         {
             if (e.Button == MouseButtons.Left) ShowContextMenu();
         };
+        _tray.BalloonTipClicked += (_, _) =>
+        {
+            if (_balloonUrl is { } url) OpenUrl(url);
+            _balloonUrl = null;
+        };
+
+        _updates = new UpdateService(CurrentVersion,
+            () => _storage.Settings.AutoUpdate,
+            () => _storage.Settings.SkippedUpdateVersion,
+            UpdateConditionsNow);
+        _updates.ApplyRequested += ready => _ui.BeginInvoke(() => ApplyUpdate(ready, manual: false));
+        _node.NewerPeerSeen += v => _updates.OnNewerPeer(v);
 
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         SystemEvents.SessionSwitch += OnSessionSwitch;
@@ -117,13 +146,99 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         }
         Task.Run(SystemSetup.EnsureFirewallRule);
         UpdateTrayState();
-        if (!startedAtLogon)
+        if (startup.UpdatedVersion is { } updated)
+        {
+            Log.Info($"업데이트 직후 시작: {updated}");
+            Notify($"ShareCom 을 {updated} 으로 업데이트했습니다. 눌러서 바뀐 점을 보세요.",
+                new Uri($"https://github.com/{UpdateChecker.Repository}/releases/tag/v{updated}"));
+        }
+        else if (startup.FailedVersion is { } failed)
+            Notify($"새 버전 {failed} 이 제대로 시작하지 않아 이전 버전으로 되돌렸습니다. 이 버전은 건너뜁니다.");
+        else if (!startup.AtLogon)
             Notify(_store.GetAll().Count == 0
                 ? "실행 중입니다. 트레이 아이콘을 눌러 다른 PC와 짝을 맺으세요."
                 : "실행 중입니다. 짝 맺은 PC에 연결합니다.");
         else
             Log.Info("로그인 자동 시작으로 실행했습니다.");
         _ui.BeginInvoke(CheckAutoStart);
+        _updates.Start();
+        if (startup.UpdatedEvent is { } ev)
+        {
+            // 메시지 루프가 돌기 시작했을 때 이전 프로세스에 "잘 켜졌다"고 알린다.
+            _ui.BeginInvoke(() =>
+            {
+                UpdateHandoff.SignalStarted(ev);
+                var exe = Environment.ProcessPath;
+                if (exe is not null)
+                    Task.Run(() =>
+                    {
+                        if (!UpdateInstaller.Cleanup(exe)) Log.Info("이전 버전 파일을 지우지 못했습니다. 다음 업데이트 때 지웁니다.");
+                    });
+            });
+        }
+    }
+
+    // ───────────── 업데이트 ─────────────
+
+    private UpdateConditions UpdateConditionsNow() => new(
+        Controlling: _controlling is not null,
+        Controlled: _router.ControlledBy is not null,
+        Transferring: _files.IsBusy,
+        SinceLastInput: Win32.SinceLastInput(),
+        SinceControlEnded: DateTime.UtcNow - _lastControlUtc);
+
+    /// <summary>UI 스레드. 받은 exe 로 바꾸고 앱을 끈다. 끈 뒤에 Program 이 새 exe 를 띄운다.</summary>
+    private void ApplyUpdate(ReadyUpdate ready, bool manual)
+    {
+        if (PendingUpdate is not null) return;
+        var reason = UpdatePolicy.BlockReason(UpdateConditionsNow(), manual);
+        var exe = Environment.ProcessPath;
+        if (reason is null && exe is null) reason = "실행 파일 경로를 알 수 없습니다.";
+        if (reason is null && !manual && _settingsForm is { IsDisposed: false }) reason = "설정 창이 열려 있습니다.";
+        if (reason is not null)
+        {
+            Log.Info($"업데이트 {ready.VersionText} 을 지금 적용하지 않습니다: {reason}");
+            if (manual) Notify($"업데이트를 미뤘습니다: {reason}");
+            _updates.RetryLater();
+            return;
+        }
+        try
+        {
+            UpdateInstaller.Swap(exe!, ready.File, ready.Candidate.Payload);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"업데이트 {ready.VersionText} 파일 바꾸기 실패", ex);
+            _updates.ApplyFailed(ex.Message);
+            Notify($"업데이트 {ready.VersionText} 을 적용하지 못했습니다: {ex.Message}");
+            return;
+        }
+        Log.Info($"업데이트 {ready.VersionText} 적용: 파일을 바꿨습니다. 앱을 끄고 새 버전을 띄웁니다.");
+        PendingUpdate = new PendingUpdate(exe!, ready.VersionText, ready.Candidate.PageUrl);
+        ExitThread();
+    }
+
+    /// <summary>설정 창의 [지금 확인].</summary>
+    private async Task<string> CheckUpdateFromSettings()
+    {
+        ReadyUpdate? ready;
+        try { ready = await _updates.CheckAsync(manual: true); }
+        catch (Exception ex) { return "확인하지 못했습니다: " + ex.Message; }
+        if (ready is null) return _updates.Status;
+        var answer = MessageBox.Show(_settingsForm,
+            $"새 버전 {ready.VersionText} 이 있습니다(지금 {UpdateVersion.Display(CurrentVersion)}).\n\n" +
+            "지금 업데이트할까요? ShareCom 이 잠깐 꺼졌다가 다시 켜지고, 그동안 다른 PC와 연결이 끊깁니다.",
+            "ShareCom 업데이트", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer != DialogResult.Yes) return _updates.Status;
+        _manualUpdate = ready;
+        _settingsForm?.AcceptAndClose();
+        return "업데이트하는 중…";
+    }
+
+    private static void OpenUrl(Uri url)
+    {
+        try { Process.Start(new ProcessStartInfo(url.ToString()) { UseShellExecute = true }); }
+        catch (Exception ex) { Log.Error("주소를 열지 못했습니다", ex); }
     }
 
     /// <summary>
@@ -190,6 +305,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     void IInputSink.ControllingChanged(Guid? peer)
     {
         _controlling = peer;
+        _lastControlUtc = DateTime.UtcNow;
         _ui.BeginInvoke(UpdateTrayState);
     }
 
@@ -409,10 +525,12 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
                 _layout.OnMessage(peer, message);
                 break;
             case EnterControlMessage e:
+                _lastControlUtc = DateTime.UtcNow;
                 _router.BeginControlledBy(peer);
                 _injector.MoveTo(e.X, e.Y);
                 break;
             case LeaveControlMessage:
+                _lastControlUtc = DateTime.UtcNow;
                 _router.EndControlledBy(peer);
                 _injector.ReleaseAll();
                 break;
@@ -669,11 +787,13 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             _clipboard.Enabled,
             _node.EncryptionEnabled,
             _router.EdgeLocked,
-            _router.Hotkeys);
-        var version = typeof(TrayApp).Assembly.GetName().Version?.ToString(3) ?? "?";
-        var info = new SettingsInfo(_identity.Name, _identity.Thumbprint[..16] + "…", version, SystemSetup.IsAdministrator());
+            _router.Hotkeys,
+            _storage.Settings.AutoUpdate);
+        var version = UpdateVersion.Display(CurrentVersion);
+        var info = new SettingsInfo(_identity.Name, _identity.Thumbprint[..16] + "…", version, SystemSetup.IsAdministrator(), _updates.Status);
         using var form = new SettingsForm(values, info,
-            () => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_storage.Directory}\"") { UseShellExecute = true }));
+            () => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_storage.Directory}\"") { UseShellExecute = true }),
+            CheckUpdateFromSettings);
         _settingsForm = form;
         try
         {
@@ -682,6 +802,11 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         finally
         {
             _settingsForm = null;
+        }
+        if (_manualUpdate is { } manual)
+        {
+            _manualUpdate = null;
+            ApplyUpdate(manual, manual: true);
         }
     }
 
@@ -703,6 +828,11 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             _router.Hotkeys = next.Hotkeys;
             _storage.Settings.Hotkeys = _router.Hotkeys;
             Log.Info($"단축키 변경: 잠금 {HotkeySettings.LockKeyName(_router.Hotkeys.LockKey)}, 바로 이동 {HotkeySettings.ModifiersName(_router.Hotkeys.JumpModifiers)}");
+        }
+        if (next.AutoUpdate != before.AutoUpdate)
+        {
+            _storage.Settings.AutoUpdate = next.AutoUpdate;
+            Log.Info($"자동 업데이트: {(next.AutoUpdate ? "켬" : "끔")}");
         }
         SaveSettings();
         if (next.EncryptionEnabled != before.EncryptionEnabled) SetEncryption(next.EncryptionEnabled);
@@ -744,10 +874,14 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
 
     private static string Trim(string s) => s.Length <= 63 ? s : s[..63];
 
-    private void Notify(string text)
+    private void Notify(string text, Uri? link = null)
     {
         Log.Info(text);
-        _ui.BeginInvoke(() => _tray.ShowBalloonTip(3000, "ShareCom", text, ToolTipIcon.None));
+        _ui.BeginInvoke(() =>
+        {
+            _balloonUrl = link;
+            _tray.ShowBalloonTip(link is null ? 3000 : 10000, "ShareCom", text, ToolTipIcon.None);
+        });
     }
 
     private void SaveSettings()
@@ -769,6 +903,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            _updates.Dispose();
             _router.ReturnHome();
             _hooks.Dispose();
             _clipboardWatcher.Dispose();

@@ -33,10 +33,21 @@ internal static class Program
         }
         if (args.Length == 2 && args[0] == "--selftest-autostart")
             return SelfTest.RunAutoStart(args[1]);
+        if (args.Length == 4 && args[0] == "--selftest-update")
+            return SelfTest.RunUpdate(args[1], args[2], fail: args[3] == "fail");
+        if ((args.Contains(UpdateHandoff.AfterUpdateArg) || args.Contains(UpdateHandoff.UpdateFailedArg))
+            && Environment.GetEnvironmentVariable(SelfTest.UpdateChildVariable) is { Length: > 0 } childMode)
+            return SelfTest.RunUpdateChild(childMode, args);
 
-        using var mutex = new Mutex(true, @"Global\ShareCom-SingleInstance-v1", out bool first);
+        var startup = ParseStartup(args);
+        // 업데이트 직후에는 이전 프로세스가 잠금을 놓을 때까지 잠깐 기다린다.
+        var mutex = new Mutex(false, @"Global\ShareCom-SingleInstance-v1");
+        bool first;
+        try { first = mutex.WaitOne(startup.UpdatedEvent is not null || startup.FailedVersion is not null ? 15000 : 0); }
+        catch (AbandonedMutexException) { first = true; }
         if (!first)
         {
+            mutex.Dispose();
             MessageBox.Show("ShareCom 이 이미 실행 중입니다. 작업 표시줄 오른쪽 트레이 아이콘을 확인하세요.",
                 "ShareCom", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 0;
@@ -58,21 +69,51 @@ internal static class Program
         TaskScheduler.UnobservedTaskException += (_, e) => { Log.Error("관찰하지 않은 작업 오류", e.Exception); e.SetObserved(); };
 
         ApplicationConfiguration.Initialize();
+        PendingUpdate? pending = null;
         try
         {
-            using var app = new TrayApp(startedAtLogon: args.Contains(AutoStart.Argument));
+            using var app = new TrayApp(startup);
             Application.Run(app);
+            pending = app.PendingUpdate;
         }
         catch (Exception ex)
         {
             Log.Error("시작 실패", ex);
+            if (startup.UpdatedEvent is not null) return 3; // 업데이트 직후 실패: 이전 프로세스가 되돌린다
             MessageBox.Show($"ShareCom 을 시작하지 못했습니다.\n\n{ex.Message}", "ShareCom", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
             CursorHider.RestoreNow();
+            mutex.ReleaseMutex();
+            mutex.Dispose();
+            if (pending is not null)
+                UpdateHandoff.Run(pending, SkipVersion);
             Log.Flush();
         }
         return 0;
+    }
+
+    private static StartupOptions ParseStartup(string[] args)
+    {
+        string? Arg(string name, int offset = 1)
+        {
+            int i = Array.IndexOf(args, name);
+            return i >= 0 && i + offset < args.Length ? args[i + offset] : null;
+        }
+        return new StartupOptions(
+            AtLogon: args.Contains(AutoStart.Argument),
+            UpdatedEvent: Arg(UpdateHandoff.AfterUpdateArg),
+            UpdatedVersion: Arg(UpdateHandoff.AfterUpdateArg, 2),
+            FailedVersion: Arg(UpdateHandoff.UpdateFailedArg));
+    }
+
+    /// <summary>시작하지 못해 되돌린 버전을 기록한다. 그 버전은 자동으로 다시 받지 않는다.</summary>
+    private static bool SkipVersion(string version)
+    {
+        var storage = new AppStorage();
+        storage.Settings.SkippedUpdateVersion = version;
+        storage.Save();
+        return true;
     }
 }

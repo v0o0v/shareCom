@@ -8,21 +8,24 @@ internal sealed record SettingsValues(
     bool ClipboardEnabled,
     bool EncryptionEnabled,
     bool EdgeLocked,
-    HotkeySettings Hotkeys);
+    HotkeySettings Hotkeys,
+    bool AutoUpdate);
 
 /// <summary>이 PC 정보(읽기 전용 표시).</summary>
-internal sealed record SettingsInfo(string PcName, string Thumbprint, string Version, bool CanChangeAutoStart);
+internal sealed record SettingsInfo(string PcName, string Thumbprint, string Version, bool CanChangeAutoStart, string UpdateStatus = "");
 
 /// <summary>설정 창. [확인]을 누르면 <see cref="Result"/> 에 고른 값이 담긴다.</summary>
 internal sealed class SettingsForm : Form
 {
-    private readonly CheckBox _autoStart, _clipboard, _encryption, _edgeLocked;
+    private readonly CheckBox _autoStart, _clipboard, _encryption, _edgeLocked, _autoUpdate;
+    private readonly Label _updateStatus;
     private readonly ComboBox _lockKey, _jumpMods;
     private readonly Label _jumpHint;
 
     public SettingsValues? Result { get; private set; }
 
-    public SettingsForm(SettingsValues values, SettingsInfo info, Action openLogFolder)
+    /// <param name="checkUpdate">[지금 확인]을 누르면 부른다. 돌려준 글을 상태 칸에 보여 준다.</param>
+    public SettingsForm(SettingsValues values, SettingsInfo info, Action openLogFolder, Func<Task<string>>? checkUpdate = null)
     {
         Text = "ShareCom 설정";
         Font = UiFonts.Normal;
@@ -75,6 +78,28 @@ internal sealed class SettingsForm : Form
         UpdateJumpHint();
         root.Controls.Add(keys.Parent!);
 
+        // ── 업데이트
+        var update = Group("업데이트");
+        _autoUpdate = Check("새 버전이 나오면 자동으로 업데이트", values.AutoUpdate);
+        update.Controls.Add(_autoUpdate);
+        update.Controls.Add(Hint("GitHub 정식 릴리즈를 6시간마다 확인하고, 서명을 확인한 뒤\n이 PC를 5분 넘게 쓰지 않을 때 바꿉니다. 데이터 통신 연결에서는 받지 않습니다."));
+        var row = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 4, 0, 0) };
+        var checkNow = new Button { Text = "지금 확인", AutoSize = true, MinimumSize = new Size(90, 0), Enabled = checkUpdate is not null };
+        _updateStatus = new Label { Text = info.UpdateStatus, AutoSize = true, MaximumSize = new Size(380, 0), Margin = new Padding(8, 8, 3, 3) };
+        checkNow.Click += async (_, _) =>
+        {
+            if (checkUpdate is null) return;
+            checkNow.Enabled = false;
+            _updateStatus.Text = "확인하는 중…";
+            try { _updateStatus.Text = await checkUpdate(); }
+            catch (Exception ex) { _updateStatus.Text = "확인하지 못했습니다: " + ex.Message; }
+            finally { if (!IsDisposed) checkNow.Enabled = true; }
+        };
+        row.Controls.Add(checkNow);
+        row.Controls.Add(_updateStatus);
+        update.Controls.Add(row);
+        root.Controls.Add(update.Parent!);
+
         // ── 이 PC
         var about = Group("이 PC");
         about.Controls.Add(new Label { Text = $"이름: {info.PcName}", AutoSize = true });
@@ -89,19 +114,7 @@ internal sealed class SettingsForm : Form
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0) };
         var cancel = new Button { Text = "취소", AutoSize = true, MinimumSize = new Size(90, 0), DialogResult = DialogResult.Cancel };
         var ok = new Button { Text = "확인", AutoSize = true, MinimumSize = new Size(90, 0) };
-        ok.Click += (_, _) =>
-        {
-            Result = new SettingsValues(
-                _autoStart.Checked,
-                _clipboard.Checked,
-                _encryption.Checked,
-                _edgeLocked.Checked,
-                new HotkeySettings(
-                    HotkeySettings.LockKeyChoices[_lockKey.SelectedIndex].Key,
-                    HotkeySettings.JumpModifierChoices[_jumpMods.SelectedIndex]));
-            DialogResult = DialogResult.OK;
-            Close();
-        };
+        ok.Click += (_, _) => AcceptAndClose();
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
         root.Controls.Add(buttons);
@@ -109,6 +122,22 @@ internal sealed class SettingsForm : Form
         Controls.Add(root);
         AcceptButton = ok;
         CancelButton = cancel;
+    }
+
+    /// <summary>지금 고른 값으로 [확인]을 누른 것처럼 닫는다.</summary>
+    public void AcceptAndClose()
+    {
+        Result = new SettingsValues(
+            _autoStart.Checked,
+            _clipboard.Checked,
+            _encryption.Checked,
+            _edgeLocked.Checked,
+            new HotkeySettings(
+                HotkeySettings.LockKeyChoices[_lockKey.SelectedIndex].Key,
+                HotkeySettings.JumpModifierChoices[_jumpMods.SelectedIndex]),
+            _autoUpdate.Checked);
+        DialogResult = DialogResult.OK;
+        Close();
     }
 
     private void UpdateJumpHint()

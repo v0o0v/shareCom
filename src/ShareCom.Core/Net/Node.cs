@@ -88,6 +88,14 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
     public event Action<PairingResult>? PairingCompleted;
     /// <summary>진단용 기록.</summary>
     public event Action<string>? Log;
+    /// <summary>상대 PC의 통신 버전이 나보다 높아 연결하지 못했다(인자: 상대 버전). 업데이트를 확인할 때다.</summary>
+    public event Action<int>? NewerPeerSeen;
+
+    private void CheckPeerVersion(Exception ex)
+    {
+        if (ex is HandshakeException { PeerVersion: var v } && v > MessageCodec.ProtocolVersion)
+            NewerPeerSeen?.Invoke(v);
+    }
 
     public void Start()
     {
@@ -194,6 +202,7 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
         catch (Exception ex)
         {
             Log?.Invoke($"들어온 연결 거절: {tcp.Client.RemoteEndPoint} - {ex.Message}");
+            CheckPeerVersion(ex);
             tcp.Dispose();
             return;
         }
@@ -309,6 +318,7 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
         catch (Exception ex)
         {
             Log?.Invoke($"연결 실패: {endpoint} - {ex.Message}");
+            CheckPeerVersion(ex);
             tcp.Dispose();
         }
         finally
@@ -438,6 +448,7 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
         catch (Exception ex)
         {
             tcp.Dispose();
+            CheckPeerVersion(ex);
             var failed = new PairingResult(PairingOutcome.Failed, null, null, ex is OperationCanceledException ? "연결 시간이 지났습니다." : ex.Message);
             PairingCompleted?.Invoke(failed);
             return failed;

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- DPAPI(ProtectedData)를 쓰려고 Windows 데스크톱 런타임을 참조한다. 화면은 없다. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>ShareCom.ReleaseTool</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ShareCom.Core\ShareCom.Core.csproj" />
+  </ItemGroup>
+
+</Project>

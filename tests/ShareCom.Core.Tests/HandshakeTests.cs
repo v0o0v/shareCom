@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using ShareCom.Core.Identity;
 using ShareCom.Core.Net;
+using ShareCom.Core.Protocol;
 
 namespace ShareCom.Core.Tests;
 
@@ -9,7 +10,7 @@ namespace ShareCom.Core.Tests;
 public class HandshakeTests
 {
     /// <summary>클라이언트 머리말을 읽고, 모드만 바꿔 돌려주는 가짜 상대(중간자 흉내). 클라이언트가 더 보낸 바이트 수를 돌려준다.</summary>
-    private static async Task<(int Port, Task<int> Extra)> FakeServer(byte replyMode)
+    private static async Task<(int Port, Task<int> Extra)> FakeServer(byte replyMode, byte? replyVersion = null)
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -23,6 +24,7 @@ public class HandshakeTests
                 var header = new byte[6];
                 await s.ReadExactlyAsync(header);
                 header[5] = replyMode;
+                if (replyVersion is { } v) header[4] = v;
                 await s.WriteAsync(header);
                 var buf = new byte[256];
                 int total = 0, n;
@@ -62,5 +64,43 @@ public class HandshakeTests
                 Handshake.ClientAsync(tcp.GetStream(), me, 1, ConnectionMode.Tls, _ => null, null, CancellationToken.None));
         }
         Assert.Equal(0, await extra.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task 상대가_더_높은_버전이면_그_버전을_알려_준다()
+    {
+        byte newer = (byte)(MessageCodec.ProtocolVersion + 1);
+        var (port, _) = await FakeServer((byte)'T', newer);
+        var me = DeviceIdentity.Create(Guid.NewGuid(), "나");
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port);
+        var ex = await Assert.ThrowsAsync<HandshakeException>(() =>
+            Handshake.ClientAsync(tcp.GetStream(), me, 1, ConnectionMode.Tls, _ => null, null, CancellationToken.None));
+        Assert.Equal(newer, ex.PeerVersion);
+    }
+
+    [Fact]
+    public async Task 서버는_버전이_다르면_자기_머리말을_돌려주고_끊는다()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var me = DeviceIdentity.Create(Guid.NewGuid(), "나");
+        var server = Task.Run(async () =>
+        {
+            using var c = await listener.AcceptTcpClientAsync();
+            return await Assert.ThrowsAsync<HandshakeException>(() =>
+                Handshake.ServerAsync(c.GetStream(), me, 1, true, _ => null, CancellationToken.None));
+        });
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port);
+        var s = tcp.GetStream();
+        byte older = (byte)(MessageCodec.ProtocolVersion - 1);
+        await s.WriteAsync(new byte[] { (byte)'S', (byte)'H', (byte)'C', (byte)'M', older, (byte)'T' });
+        var reply = new byte[6];
+        await s.ReadExactlyAsync(reply).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal((byte)MessageCodec.ProtocolVersion, reply[4]);
+        Assert.Equal(older, (await server).PeerVersion);
+        listener.Stop();
     }
 }

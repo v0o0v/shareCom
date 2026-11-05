@@ -23,6 +23,10 @@ internal sealed class AppSettings
     public bool AutoStartAsked { get; set; }
     /// <summary>자동 시작에 등록한 exe 경로. exe 를 옮기면 다시 등록한다.</summary>
     public string? AutoStartPath { get; set; }
+    /// <summary>GitHub 정식 릴리즈가 나오면 스스로 받아 바꾼다.</summary>
+    public bool AutoUpdate { get; set; } = true;
+    /// <summary>시작하지 못해 되돌린 업데이트 버전. 이 버전 이하는 자동으로 받지 않는다.</summary>
+    public string? SkippedUpdateVersion { get; set; }
 }
 
 /// <summary>
