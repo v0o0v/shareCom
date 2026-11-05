@@ -46,6 +46,12 @@ public static class Handshake
         var chosen = await ReadHeaderAsync(network, ct).ConfigureAwait(false);
         if (requested == ConnectionMode.Pairing && chosen != ConnectionMode.Pairing)
             throw new HandshakeException("상대가 짝 맺기를 받지 않았습니다.");
+        // 머리말은 보호되지 않으므로 중간에서 바꿀 수 있다. 내가 고른 것보다 약한 방식은 받지 않는다.
+        // (평문을 요청했는데 상대가 암호화를 고르는 것만 허용: "한쪽이라도 켜면 암호화")
+        if (chosen != requested && !(requested == ConnectionMode.Plain && chosen == ConnectionMode.Tls))
+            throw new HandshakeException(requested == ConnectionMode.Tls && chosen == ConnectionMode.Plain
+                ? "상대가 암호화 없이 연결하려 합니다. 중간에서 연결을 바꾼 기기가 있을 수 있어 끊습니다."
+                : "상대가 요청과 다른 연결 방식을 골랐습니다.");
 
         Stream stream = network;
         byte[]? tlsPeerCert = null;

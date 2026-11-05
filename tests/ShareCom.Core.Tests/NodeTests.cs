@@ -56,7 +56,7 @@ public class NodeTests
 {
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
 
-    private static NodeOptions FastOptions(bool encryption = true, int port = 0) => new()
+    private static NodeOptions FastOptions(bool encryption = true, int port = 0, TimeSpan? pairingCooldown = null) => new()
     {
         TcpPort = port,
         EncryptionEnabled = encryption,
@@ -67,16 +67,17 @@ public class NodeTests
         ConnectTimeout = TimeSpan.FromSeconds(2),
         HandshakeTimeout = TimeSpan.FromSeconds(5),
         PairingTimeout = TimeSpan.FromSeconds(10),
+        PairingCooldown = pairingCooldown ?? TimeSpan.FromMilliseconds(200),
     };
 
     internal static TestNode Make(FakeDiscoveryHub hub, string name, bool encryption = true,
-        DeviceIdentity? identity = null, MemoryPeerStore? store = null, int port = 0, bool silent = false)
+        DeviceIdentity? identity = null, MemoryPeerStore? store = null, int port = 0, bool silent = false, TimeSpan? pairingCooldown = null)
     {
         identity ??= DeviceIdentity.Create(Guid.NewGuid(), name);
         store ??= new MemoryPeerStore();
         var discovery = hub.Join();
         discovery.Silent = silent;
-        var node = new Node(identity, store, discovery, FastOptions(encryption, port));
+        var node = new Node(identity, store, discovery, FastOptions(encryption, port, pairingCooldown));
         var t = new TestNode { Node = node, Identity = identity, Store = store, Discovery = discovery };
         node.PairingConfirmer = (_, _) => Task.FromResult(t.AcceptPairing);
         node.MessageReceived += (_, m) => t.Received.Enqueue(m);
@@ -180,6 +181,45 @@ public class NodeTests
         var result = await a.Node.PairAsync(Ep(b));
         Assert.Equal(PairingOutcome.RejectedByPeer, result.Outcome);
         await closed.Task.WaitAsync(Wait);
+    }
+
+    [Fact]
+    public async Task 거절한_주소에서_곧바로_다시_요청하면_확인_창을_띄우지_않는다()
+    {
+        var hub = new FakeDiscoveryHub();
+        await using var a = Make(hub, "A");
+        await using var b = Make(hub, "B", pairingCooldown: TimeSpan.FromSeconds(30));
+        int prompts = 0;
+        b.Node.PairingConfirmer = (_, _) => { Interlocked.Increment(ref prompts); return Task.FromResult(false); };
+
+        Assert.Equal(PairingOutcome.RejectedByPeer, (await a.Node.PairAsync(Ep(b))).Outcome);
+        var again = await a.Node.PairAsync(Ep(b));
+        Assert.NotEqual(PairingOutcome.Paired, again.Outcome);
+        Assert.Equal(1, prompts);
+        Assert.Empty(b.Store.GetAll());
+    }
+
+    [Fact]
+    public async Task 짝_맺기_확인_창이_떠_있는_동안_온_다른_요청은_무시한다()
+    {
+        var hub = new FakeDiscoveryHub();
+        await using var a = Make(hub, "A");
+        await using var c = Make(hub, "C");
+        await using var b = Make(hub, "B");
+        int prompts = 0;
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        b.Node.PairingConfirmer = (_, ct) => { Interlocked.Increment(ref prompts); return release.Task.WaitAsync(ct); };
+
+        var first = a.Node.PairAsync(Ep(b));
+        await Until(() => Volatile.Read(ref prompts) == 1, "첫 요청의 확인 창");
+        var second = await c.Node.PairAsync(Ep(b)); // B 는 아직 고르지 않았다
+        Assert.NotEqual(PairingOutcome.Paired, second.Outcome);
+        Assert.Equal(1, Volatile.Read(ref prompts));
+
+        release.SetResult(true);
+        Assert.Equal(PairingOutcome.Paired, (await first).Outcome);
+        Assert.NotNull(b.Store.Get(a.Identity.Id));
+        Assert.Null(b.Store.Get(c.Identity.Id));
     }
 
     [Fact]

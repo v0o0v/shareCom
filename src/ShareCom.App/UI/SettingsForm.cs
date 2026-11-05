@@ -48,7 +48,7 @@ internal sealed class SettingsForm : Form
         general.Controls.Add(_clipboard);
         _encryption = Check("암호화 (TLS)", values.EncryptionEnabled);
         general.Controls.Add(_encryption);
-        general.Controls.Add(Hint("끄면 같은 와이파이의 다른 기기가 키 입력을 엿볼 수 있습니다. 바꾸면 다시 연결합니다."));
+        general.Controls.Add(Hint("끄면 같은 와이파이의 다른 기기가 키 입력을 엿보거나 가짜 입력을 넣어 이 PC를 조작할 수 있습니다.\n끄지 않기를 권합니다. 바꾸면 다시 연결합니다."));
         _edgeLocked = Check("가장자리 넘기기 잠금", values.EdgeLocked);
         general.Controls.Add(_edgeLocked);
         root.Controls.Add(general.Parent!);
