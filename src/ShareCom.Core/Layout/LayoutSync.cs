@@ -6,7 +6,8 @@ namespace ShareCom.Core.Layout;
 /// <summary>
 /// 모든 PC가 함께 쓰는 화면 배치를 맞춘다. 연결되면 서로 배치를 보내고 더 새 판을 고른다.
 /// 각 PC는 자기 항목(이름·화면)만 넣고 고친다. 고른 판에 내 항목이 없거나 내 화면과 다르면 고쳐서 새 판으로 퍼뜨린다.
-/// 짝이 풀린 PC 항목은 지운다. 배치 편집기에서 바꾼 위치도 새 판으로 퍼뜨린다.
+/// 짝이 풀린 PC 항목은 지우되 자리를 기억해 두고, 다시 짝을 맺으면 그 자리로 되살린다.
+/// 배치 편집기에서 바꾼 위치도 새 판으로 퍼뜨린다.
 /// </summary>
 public sealed class LayoutSync
 {
@@ -18,19 +19,27 @@ public sealed class LayoutSync
     private LayoutDoc _doc;
     private string _name = "";
     private PcScreen? _screen;
+    /// <summary>짝을 풀어 배치에서 지운 PC의 마지막 항목. 다시 짝을 맺으면 되살린다.</summary>
+    private readonly Dictionary<Guid, LayoutEntry> _remembered = new();
 
     /// <param name="sideHint">짝 맺을 때 정한 방향(그 PC가 내 어느 쪽인지). 배치에 처음 들어갈 때 그 PC 옆에 놓는다.</param>
     /// <param name="isRevoked">짝을 푼 PC인지.</param>
-    public LayoutSync(Guid self, IPeerMessenger messenger, Func<Guid, NeighborSide?> sideHint, Func<Guid, bool> isRevoked, LayoutDoc? saved = null)
+    /// <param name="remembered">지난번에 기억해 둔, 짝을 푼 PC들의 항목(<see cref="Remembered"/> 를 저장해 둔 것).</param>
+    public LayoutSync(Guid self, IPeerMessenger messenger, Func<Guid, NeighborSide?> sideHint, Func<Guid, bool> isRevoked,
+        LayoutDoc? saved = null, IEnumerable<LayoutEntry>? remembered = null)
     {
         _self = self;
         _messenger = messenger;
         _sideHint = sideHint;
         _isRevoked = isRevoked;
         _doc = saved ?? LayoutDoc.Empty;
+        foreach (var e in remembered ?? []) if (e.Id != self) _remembered[e.Id] = e;
     }
 
     public LayoutDoc Doc { get { lock (_gate) return _doc; } }
+
+    /// <summary>짝을 풀어 배치에서 뺀 PC들의 마지막 항목. 저장해 두었다가 다음 실행 때 넘겨준다.</summary>
+    public IReadOnlyList<LayoutEntry> Remembered { get { lock (_gate) return _remembered.Values.ToList(); } }
 
     /// <summary>배치가 바뀌었다(저장·입력 라우터·편집기 갱신용). 잠금 밖에서 부른다.</summary>
     public event Action<LayoutDoc>? Changed;
@@ -88,11 +97,29 @@ public sealed class LayoutSync
         if (publish is not null) Publish(publish, except: null);
     }
 
-    /// <summary>내 항목을 맞추고 짝을 푼 PC를 지운다. 바뀌었으면 판을 올리고 true.</summary>
+    /// <summary>
+    /// 내 항목을 맞추고 짝을 푼 PC를 지운다(자리는 기억). 다시 짝을 맺은 PC는 기억한 자리로 되살린다.
+    /// 바뀌었으면 판을 올리고 true.
+    /// </summary>
     private bool FixLocked(bool bump = true)
     {
+        foreach (var e in _doc.Entries)
+            if (e.Id != _self && _isRevoked(e.Id)) _remembered[e.Id] = e;
         var entries = _doc.Entries.Where(e => e.Id == _self || !_isRevoked(e.Id)).ToList();
         bool changed = entries.Count != _doc.Entries.Length;
+
+        // 다시 짝을 맺었다: 기억한 자리가 비어 있으면 그대로 되살린다. 그 PC도 나를 기억해 두었다가 되살리므로
+        // 두 PC가 같은 배치로 다시 모인다(어느 판이 이기든 자동 배치로 밀려나지 않는다).
+        foreach (var r in _remembered.Values.ToList())
+        {
+            if (_isRevoked(r.Id)) continue;
+            _remembered.Remove(r.Id);
+            if (entries.Any(e => e.Id == r.Id)) continue;
+            var box = DeskLayout.BoxOf(r);
+            if (entries.Any(e => DeskLayout.BoxOf(e).Overlaps(box))) continue;
+            entries.Add(r);
+            changed = true;
+        }
 
         if (_screen is { } screen)
         {

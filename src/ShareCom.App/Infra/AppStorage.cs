@@ -17,6 +17,8 @@ internal sealed class AppSettings
     public Dictionary<Guid, long> RevokedPeers { get; set; } = new();
     /// <summary>모든 PC가 함께 쓰는 화면 배치(마지막으로 받은 판).</summary>
     public LayoutDoc? Layout { get; set; }
+    /// <summary>짝을 푼 PC가 판에서 빠지기 전 자리. 다시 짝을 맺으면 그 자리로 되돌린다.</summary>
+    public List<LayoutEntry>? RememberedLayout { get; set; }
     /// <summary>바꿀 수 있는 단축키. 없으면 기본값.</summary>
     public HotkeySettings? Hotkeys { get; set; }
     /// <summary>첫 실행 때 자동 시작을 켤지 이미 물었다.</summary>
