@@ -152,7 +152,7 @@
 - GitHub API 요청의 User-Agent 는 `ShareCom-Updater` 다. 사용자 정보는 보내지 않는다.
 - 릴리즈 만들기
   - `tools/ShareCom.ReleaseTool` 이 키 만들기(`keygen`), 서명(`sign`), 검증(`verify`), 백업 내보내기·가져오기(`export-backup`, `import-backup`)를 한다.
-  - 서명 개인 키는 이 PC의 `%APPDATA%\ShareCom-release\` 에 DPAPI 로 보관한다. 백업 1부는 암호를 걸어 내보내 사용자가 USB나 비밀번호 관리자에 둔다. `spare` 개인 키는 백업에만 남기고 이 PC에서는 지운다.
+  - 서명 개인 키는 이 PC의 `D:\keys\sharecom\` 에 DPAPI 로 보관한다(환경 변수 `SHARECOM_RELEASE_KEY_DIR` 로 바꿀 수 있다). 백업 1부는 암호를 걸어 내보내 사용자가 USB나 비밀번호 관리자에 둔다. `spare` 개인 키는 백업에만 남기고 이 PC에서는 지운다.
   - `scripts/release.ps1` 이 시험·빌드·서명·명세·GitHub 릴리즈 생성을 한 번에 한다. 매번 사용자가 승인하고 실행한다.
 - v0.5.x 에는 업데이트 기능이 없으므로 v0.6.0 까지는 손으로 한 번 바꿔야 한다.
 

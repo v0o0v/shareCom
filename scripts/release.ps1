@@ -4,7 +4,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release.ps1 -Version 0.6.0 -NotesFile notes.md
 #   -DryRun : GitHub 에 올리지 않고 만들기·서명·검증까지만 한다.
 #
-# 서명 키는 이 PC의 %APPDATA%\ShareCom-release\primary.key (DPAPI) 를 쓴다.
+# 서명 키는 이 PC의 D:\keys\sharecom\primary.key (DPAPI) 를 쓴다(SHARECOM_RELEASE_KEY_DIR 로 바꿀 수 있음).
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$NotesFile,

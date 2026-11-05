@@ -19,7 +19,9 @@ internal static class Program
 {
     private static readonly string[] KeyIds = ["primary", "spare"];
 
-    private static string KeyDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShareCom-release");
+    /// <summary>서명 키 폴더. 기본은 D:\keys\sharecom, 환경 변수 SHARECOM_RELEASE_KEY_DIR 로 바꿀 수 있다.</summary>
+    private static string KeyDir =>
+        Environment.GetEnvironmentVariable("SHARECOM_RELEASE_KEY_DIR") is { Length: > 0 } dir ? dir : @"D:\keys\sharecom";
     private static string PrivatePath(string id) => Path.Combine(KeyDir, id + ".key");
     private static string PublicPath(string id) => Path.Combine(KeyDir, id + ".pub");
 
