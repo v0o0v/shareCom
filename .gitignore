@@ -12,3 +12,4 @@ TestResults/
 *.jks
 *.keystore
 .env
+.claude/*.lock

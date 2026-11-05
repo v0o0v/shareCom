@@ -1,0 +1,6 @@
+<Project>
+  <!-- 배포 폴더에 .pdb 가 따로 남지 않게 디버그 정보를 dll/exe 안에 넣는다 -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+</Project>
