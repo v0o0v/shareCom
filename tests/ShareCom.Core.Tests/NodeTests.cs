@@ -85,7 +85,7 @@ public class NodeTests
         return t;
     }
 
-    private static async Task Until(Func<bool> condition, string what)
+    internal static async Task Until(Func<bool> condition, string what)
     {
         var deadline = DateTime.UtcNow + Wait;
         while (!condition())

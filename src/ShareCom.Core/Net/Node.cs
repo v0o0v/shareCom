@@ -27,11 +27,18 @@ public enum PairingOutcome { Paired, RejectedByMe, RejectedByPeer, Failed }
 
 public sealed record PairingResult(PairingOutcome Outcome, Guid? PeerId, string? PeerName, string? Error = null);
 
+/// <summary>연결된 PC들에게 메시지를 보내는 일만 필요한 계층(배치 동기화 등)이 쓴다.</summary>
+public interface IPeerMessenger
+{
+    IReadOnlyList<Guid> ConnectedPeers { get; }
+    bool Send(Guid peer, Message message);
+}
+
 /// <summary>
 /// 이 PC의 통신 담당. 연결을 받고, 짝 맺은 PC에 계속 다시 연결을 시도하고,
 /// 짝 맺기를 처리한다. 위 계층은 PC를 ID 로만 다룬다.
 /// </summary>
-public sealed class Node : IAsyncDisposable
+public sealed class Node : IAsyncDisposable, IPeerMessenger
 {
     private readonly DeviceIdentity _me;
     private readonly IPeerStore _store;
@@ -440,7 +447,9 @@ public sealed class Node : IAsyncDisposable
                 LastPort = h.PeerListenPort,
                 // 처음 짝 맺을 때: 요청한 쪽은 상대를 오른쪽에, 받은 쪽은 상대를 왼쪽에 둔다.
                 Side = old?.Side ?? (initiator ? NeighborSide.Right : NeighborSide.Left),
+                TrustedAtUtcTicks = DateTime.UtcNow.Ticks,
             });
+            _store.ClearRevoked(h.PeerId);
             // 오래된 연결이 있으면 끊고 새 인증서로 다시 붙게 한다.
             Disconnect(h.PeerId);
             _reconnectSignal.Release();

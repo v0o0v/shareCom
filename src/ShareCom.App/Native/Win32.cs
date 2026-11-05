@@ -4,6 +4,25 @@ namespace ShareCom.App.Native;
 
 internal static class Win32
 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+
+    [DllImport("shcore.dll")]
+    public static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    /// <summary>주 모니터 배율(%). 100 = 96 DPI. 읽지 못하면 100.</summary>
+    public static int PrimaryScalePercent()
+    {
+        try
+        {
+            var monitor = MonitorFromPoint(new POINT { X = 0, Y = 0 }, 1 /* MONITOR_DEFAULTTOPRIMARY */);
+            if (GetDpiForMonitor(monitor, 0 /* MDT_EFFECTIVE_DPI */, out var dpi, out _) == 0 && dpi > 0)
+                return Math.Clamp((int)Math.Round(dpi * 100.0 / 96), 50, 500);
+        }
+        catch { }
+        return 100;
+    }
+
     public const int WH_KEYBOARD_LL = 13, WH_MOUSE_LL = 14;
 
     public const int WM_QUIT = 0x0012;
