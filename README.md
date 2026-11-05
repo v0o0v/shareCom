@@ -1,7 +1,10 @@
+**한국어** | [English](README.en.md)
+
 # ShareCom
 
 같은 와이파이에 있는 Windows PC 2~4대를 마우스·키보드 하나로 함께 조작하고, 클립보드를 공유하고, 파일을 옮기는 프로그램이다.
 
+- 내려받기: [최신 릴리즈](https://github.com/v0o0v/shareCom/releases/latest) (`ShareCom.exe` 파일 하나, 설치 필요 없음)
 - 설계: [docs/design.md](docs/design.md)
 - 실기 확인 목록: [docs/manual-test.md](docs/manual-test.md)
 
