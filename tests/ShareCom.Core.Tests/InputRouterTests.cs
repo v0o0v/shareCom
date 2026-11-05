@@ -332,6 +332,82 @@ public class InputRouterTests
     }
 
     [Fact]
+    public void 상대가_나를_놓으면_내_포인터를_숨기고_실제_마우스를_움직이면_다시_보인다()
+    {
+        _router.BeginControlledBy(Peer);
+        _router.OnMouseMove(700, 400, injected: true);
+        Assert.False(_sink.Hidden); // 조작당하는 동안에는 상대가 움직이는 포인터가 보인다
+        _router.EndControlledBy(Peer);
+        Assert.True(_sink.Hidden);
+
+        Assert.False(_router.OnMouseMove(700, 400, injected: false)); // 움직이지 않은 이벤트
+        Assert.True(_sink.Hidden);
+        Assert.False(_router.OnMouseMove(701, 400, injected: false));
+        Assert.False(_sink.Hidden);
+    }
+
+    [Fact]
+    public void 숨긴_포인터는_실제_클릭이나_휠에도_다시_보인다()
+    {
+        _router.BeginControlledBy(Peer);
+        _router.EndControlledBy(Peer);
+        Assert.True(_sink.Hidden);
+        _router.OnMouseButton(MouseButtonKind.Left, true, injected: false);
+        Assert.False(_sink.Hidden);
+
+        _router.BeginControlledBy(Peer);
+        _router.EndControlledBy(Peer);
+        _router.OnMouseWheel(120, false, injected: false);
+        Assert.False(_sink.Hidden);
+    }
+
+    [Fact]
+    public void 숨긴_뒤_다시_조작당하거나_화면을_잠그면_보인다()
+    {
+        _router.BeginControlledBy(Peer);
+        _router.EndControlledBy(Peer);
+        Assert.True(_sink.Hidden);
+        _router.BeginControlledBy(Peer);
+        Assert.False(_sink.Hidden);
+
+        _router.EndControlledBy(Peer);
+        Assert.True(_sink.Hidden);
+        _router.ReturnHome(); // 화면 잠금·절전
+        Assert.False(_sink.Hidden);
+    }
+
+    [Fact]
+    public void 조작당하던_PC와_연결이_끊겨도_포인터를_숨기고_키보드만으로는_다시_보이지_않는다()
+    {
+        _router.BeginControlledBy(Peer);
+        _router.SetPeerConnected(Peer, false);
+        Assert.Null(_router.ControlledBy);
+        Assert.True(_sink.Hidden);
+        _router.OnKey(0x41, 0x1E, false, true, false);
+        Assert.True(_sink.Hidden);
+    }
+
+    [Fact]
+    public void 숨긴_상태에서_단축키로_다른_PC로_갔다_돌아오면_다시_숨길_수_있다()
+    {
+        _router.BeginControlledBy(Other);
+        _router.EndControlledBy(Other);
+        Assert.True(_sink.Hidden);
+
+        _router.OnKey(InputRouter.VkLControl, 0x1D, false, true, false);
+        _router.OnKey(InputRouter.VkLMenu, 0x38, false, true, false);
+        Assert.True(_router.OnKey(0x32, 0x03, false, true, false)); // Ctrl+Alt+2 → Peer
+        Assert.Equal(Peer, _router.Controlling);
+        Assert.True(_sink.Hidden);
+        Assert.True(_router.OnKey(0x31, 0x02, false, true, false)); // Ctrl+Alt+1 → 내 PC
+        Assert.False(_sink.Hidden);
+
+        _router.BeginControlledBy(Other);
+        _router.EndControlledBy(Other);
+        Assert.True(_sink.Hidden);
+    }
+
+    [Fact]
     public void 조작당하는_중에_실제_키를_누르면_주인을_되찾는다()
     {
         _router.BeginControlledBy(Peer);
