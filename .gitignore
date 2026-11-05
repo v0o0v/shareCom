@@ -1,0 +1,14 @@
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+.idea/
+TestResults/
+.claude/worktrees/
+*.pfx
+*.pem
+*.jks
+*.keystore
+.env
