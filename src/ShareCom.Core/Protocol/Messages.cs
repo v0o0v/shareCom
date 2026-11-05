@@ -49,6 +49,9 @@ public enum MessageType : byte
     MouseWheel = 34,
     Key = 35,
     TakeOver = 36,
+
+    // 큰 데이터(클립보드·파일) 조각
+    BlobChunk = 40,
 }
 
 public abstract record Message(MessageType Type);
@@ -82,3 +85,11 @@ public sealed record KeyMessage(ushort VirtualKey, ushort ScanCode, bool Extende
 
 /// <summary>조작당하던 PC에서 실제 입력이 생겨 그 PC가 주인을 되찾는다.</summary>
 public sealed record TakeOverMessage() : Message(MessageType.TakeOver);
+
+/// <summary>
+/// 큰 데이터의 한 조각. 같은 BlobId 의 조각을 Offset 순서대로 모으면 TotalLength 바이트가 된다.
+/// 마우스·키보드보다 늦게 보내는 줄(bulk)로 간다.
+/// </summary>
+public sealed record BlobChunkMessage(uint BlobId, BlobKind Kind, long TotalLength, long Offset, byte[] Data) : Message(MessageType.BlobChunk);
+
+public enum BlobKind : byte { Clipboard = 1 }

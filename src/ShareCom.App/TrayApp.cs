@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using Microsoft.Win32;
+using ShareCom.App.Clipboard;
 using ShareCom.App.Infra;
 using ShareCom.App.Input;
 using ShareCom.App.Native;
 using ShareCom.App.UI;
+using ShareCom.Core.Clipboard;
 using ShareCom.Core.Identity;
 using ShareCom.Core.Input;
 using ShareCom.Core.Net;
@@ -13,7 +15,7 @@ using Message = ShareCom.Core.Protocol.Message;
 namespace ShareCom.App;
 
 /// <summary>트레이에 상주하며 통신(Node)·입력 라우팅(InputRouter)·입력 훅·입력 재현을 잇는다.</summary>
-internal sealed class TrayApp : ApplicationContext, IInputSink
+internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransport
 {
     private readonly AppStorage _storage;
     private readonly JsonPeerStore _store;
@@ -24,6 +26,8 @@ internal sealed class TrayApp : ApplicationContext, IInputSink
     private readonly InputHooks _hooks;
     private readonly NotifyIcon _tray;
     private readonly Control _ui;
+    private readonly ClipboardSync _clipboard;
+    private readonly ClipboardWatcher _clipboardWatcher;
     private Guid? _controlling;
 
     public TrayApp()
@@ -54,6 +58,11 @@ internal sealed class TrayApp : ApplicationContext, IInputSink
         _node.MessageReceived += OnMessage;
         _node.PairingConfirmer = ConfirmPairingAsync;
         _node.PairingCompleted += OnPairingCompleted;
+        _node.BlobReceived += OnBlob;
+
+        _clipboard = new ClipboardSync(this) { Enabled = _storage.Settings.ClipboardEnabled };
+        _clipboardWatcher = new ClipboardWatcher();
+        _clipboardWatcher.Changed += OnLocalClipboardChanged;
 
         _tray = new NotifyIcon
         {
@@ -104,6 +113,56 @@ internal sealed class TrayApp : ApplicationContext, IInputSink
         _controlling = peer;
         _ui.BeginInvoke(UpdateTrayState);
     }
+
+    // ───────────── 클립보드 ─────────────
+
+    IReadOnlyList<Guid> IClipboardTransport.ConnectedPeers => _node.ConnectedPeers;
+
+    void IClipboardTransport.SendToPeer(Guid peer, byte[] payload) => _node.SendBlob(peer, BlobKind.Clipboard, payload);
+
+    void IClipboardTransport.WriteLocal(ClipboardContent content) => _ui.BeginInvoke(() =>
+    {
+        _clipboardWatcher.MarkSelfWrite();
+        ClipboardIo.Write(content);
+        Log.Info($"클립보드 받음: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
+    });
+
+    /// <summary>UI 스레드에서 불린다. 읽기만 여기서 하고 보내기는 다른 스레드에서 한다.</summary>
+    private void OnLocalClipboardChanged()
+    {
+        if (!_clipboard.Enabled || _node.ConnectedPeers.Count == 0) return;
+        var content = ClipboardIo.Read();
+        if (content is null) return;
+        Task.Run(() =>
+        {
+            try
+            {
+                int before = _clipboard.SentCount;
+                _clipboard.OnLocalChanged(content);
+                if (_clipboard.SentCount != before)
+                    Log.Info($"클립보드 보냄: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
+            }
+            catch (Exception ex) { Log.Error("클립보드 보내기 실패", ex); }
+        });
+    }
+
+    private void OnBlob(Guid peer, BlobKind kind, byte[] data)
+    {
+        if (kind != BlobKind.Clipboard) return;
+        // 받는 루프(마우스·키보드도 같이 받는다)를 붙잡지 않게 다른 스레드에서 푼다.
+        Task.Run(() =>
+        {
+            try { _clipboard.OnRemote(peer, data); }
+            catch (Exception ex) { Log.Error("받은 클립보드를 풀지 못했습니다", ex); }
+        });
+    }
+
+    private static string FormatBytes(long n) => n switch
+    {
+        < 1024 => $"{n}B",
+        < 1024 * 1024 => $"{n / 1024.0:0.#}KB",
+        _ => $"{n / 1024.0 / 1024.0:0.#}MB",
+    };
 
     // ───────────── 통신 이벤트 ─────────────
 
@@ -279,6 +338,15 @@ internal sealed class TrayApp : ApplicationContext, IInputSink
         };
         menu.Items.Add(edge);
 
+        var clipboard = new ToolStripMenuItem("클립보드 공유") { Checked = _clipboard.Enabled };
+        clipboard.Click += (_, _) =>
+        {
+            _clipboard.Enabled = !_clipboard.Enabled;
+            _storage.Settings.ClipboardEnabled = _clipboard.Enabled;
+            SaveSettings();
+        };
+        menu.Items.Add(clipboard);
+
         var encryption = new ToolStripMenuItem("암호화") { Checked = _node.EncryptionEnabled };
         encryption.Click += (_, _) => ToggleEncryption();
         menu.Items.Add(encryption);
@@ -395,6 +463,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             _router.ReturnHome();
             _hooks.Dispose();
+            _clipboardWatcher.Dispose();
             _injector.ReleaseAll();
             CursorHider.RestoreNow();
             try { _node.DisposeAsync().AsTask().Wait(2000); } catch { }
