@@ -15,6 +15,8 @@ public static class ClipboardFormats
     public const string Rtf = "rtf";
     /// <summary>PNG 이미지.</summary>
     public const string Png = "png";
+    /// <summary>파일 제안(FileOffer). 내용은 붙여넣을 때 받는다.</summary>
+    public const string Files = "files";
 }
 
 public sealed record ClipboardItem(string Format, byte[] Data);
@@ -81,8 +83,8 @@ public interface IClipboardTransport
 {
     IReadOnlyList<Guid> ConnectedPeers { get; }
     void SendToPeer(Guid peer, byte[] payload);
-    /// <summary>받은 내용을 이 PC 클립보드에 쓴다.</summary>
-    void WriteLocal(ClipboardContent content);
+    /// <summary>받은 내용을 이 PC 클립보드에 쓴다. 파일 제안이면 붙여넣을 때 fromPeer 에서 내용을 받는다.</summary>
+    void WriteLocal(Guid fromPeer, ClipboardContent content);
 }
 
 /// <summary>
@@ -128,6 +130,6 @@ public sealed class ClipboardSync
             if (content.Hash == _currentHash) return;
             _currentHash = content.Hash;
         }
-        _transport.WriteLocal(content);
+        _transport.WriteLocal(peer, content);
     }
 }

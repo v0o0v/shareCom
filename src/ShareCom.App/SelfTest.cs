@@ -65,6 +65,45 @@ internal static class SelfTest
         return failures == 0 ? 0 : 1;
     }
 
+    /// <summary>
+    /// 진단 명령. <c>ShareCom.exe --selftest-files 원본폴더 초</c>
+    /// 원본 폴더 안의 항목을 가상 파일로 클립보드에 올리고 정한 시간 동안 기다린다(그동안 탐색기에서 붙여넣어 본다).
+    /// 원본 폴더 옆에 ready.txt 를 만들어 준비됐음을 알린다. 끝나면 원래 클립보드 내용을 되돌린다.
+    /// </summary>
+    public static int ServeFiles(string sourceDir, int seconds)
+    {
+        ShareCom.App.Infra.Log.Init(Path.GetDirectoryName(Path.GetFullPath(sourceDir))!);
+        var backup = Backup();
+        var local = ShareCom.Core.Files.LocalOffer.Build(Directory.EnumerateFileSystemEntries(sourceDir));
+        var obj = new VirtualFileDataObject(local.Offer, i => new ForwardOnlyStream(File.OpenRead(local.FullPaths[i])), "시험");
+        OleClipboard.Set(obj);
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sourceDir))!, "ready.txt"), local.Offer.Entries.Count.ToString());
+        using var timer = new System.Windows.Forms.Timer { Interval = seconds * 1000 };
+        timer.Tick += (_, _) => Application.ExitThread();
+        timer.Start();
+        Application.Run();
+        OleClipboard.ReleaseIfOwned();
+        Restore(backup);
+        ShareCom.App.Infra.Log.Flush();
+        return 0;
+    }
+
+    /// <summary>원격 스트림처럼 앞으로만 읽히는 스트림(시험용).</summary>
+    private sealed class ForwardOnlyStream(Stream inner) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
+    }
+
     private static byte[] TrimNull(byte[] data)
     {
         int n = data.Length;

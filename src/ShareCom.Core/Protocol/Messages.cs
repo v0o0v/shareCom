@@ -52,6 +52,15 @@ public enum MessageType : byte
 
     // 큰 데이터(클립보드·파일) 조각
     BlobChunk = 40,
+
+    // 파일 전송
+    FileOpen = 50,
+    FileChunk = 51,
+    FileAck = 52,
+    FileError = 53,
+    FileCancel = 54,
+    FileSendResponse = 55,
+    FileSendResult = 56,
 }
 
 public abstract record Message(MessageType Type);
@@ -92,4 +101,17 @@ public sealed record TakeOverMessage() : Message(MessageType.TakeOver);
 /// </summary>
 public sealed record BlobChunkMessage(uint BlobId, BlobKind Kind, long TotalLength, long Offset, byte[] Data) : Message(MessageType.BlobChunk);
 
-public enum BlobKind : byte { Clipboard = 1 }
+public enum BlobKind : byte { Clipboard = 1, FileSendRequest = 2 }
+
+/// <summary>받는 쪽이 제안(OfferId)의 Index 번째 파일을 Offset 부터 보내 달라고 한다.</summary>
+public sealed record FileOpenMessage(uint RequestId, Guid OfferId, int Index, long Offset) : Message(MessageType.FileOpen);
+/// <summary>파일 내용 한 조각(대량 줄). Last 면 파일 끝.</summary>
+public sealed record FileChunkMessage(uint RequestId, byte[] Data, bool Last) : Message(MessageType.FileChunk);
+/// <summary>받는 쪽이 지금까지 읽은 바이트 수. 보내는 쪽은 확인받지 못한 양이 일정량을 넘지 않게 보낸다.</summary>
+public sealed record FileAckMessage(uint RequestId, long Consumed) : Message(MessageType.FileAck);
+public sealed record FileErrorMessage(uint RequestId, string Error) : Message(MessageType.FileError);
+public sealed record FileCancelMessage(uint RequestId) : Message(MessageType.FileCancel);
+/// <summary>트레이로 보낸 파일을 받을지 답한다.</summary>
+public sealed record FileSendResponseMessage(Guid OfferId, bool Accepted) : Message(MessageType.FileSendResponse);
+/// <summary>받는 쪽이 다 받았는지(또는 실패했는지) 알린다.</summary>
+public sealed record FileSendResultMessage(Guid OfferId, bool Success, string Error) : Message(MessageType.FileSendResult);

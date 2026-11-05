@@ -102,6 +102,14 @@ public sealed class Node : IAsyncDisposable
         return c?.Send(message) ?? false;
     }
 
+    /// <summary>늦게 가도 되는 메시지(파일 조각 등)를 대량 줄로 보낸다.</summary>
+    public bool SendBulk(Guid peer, Message message)
+    {
+        PeerConnection? c;
+        lock (_gate) _connections.TryGetValue(peer, out c);
+        return c?.SendBulk(message) ?? false;
+    }
+
     /// <summary>
     /// 큰 데이터를 64KB 조각으로 나눠 대량 줄로 보낸다. 마우스·키보드 메시지가 늘 먼저 간다.
     /// 받는 쪽에서는 다 모이면 <see cref="BlobReceived"/> 가 한 번 일어난다.
