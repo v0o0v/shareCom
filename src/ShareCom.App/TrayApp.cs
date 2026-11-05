@@ -40,10 +40,6 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
     private readonly UpdateService _updates;
     private LayoutEditorForm? _layoutEditor;
     private Guid? _controlling;
-    // 원격 이동이 고르게 오가는지 잰다. 조작이 끝날 때 [기록]에 요약 한 줄을 남긴다.
-    private readonly MotionStats _sentMoves = new();
-    private readonly MotionStats _receivedMoves = new();
-    private Guid? _receivedFrom;
     /// <summary>마지막으로 조작을 시작·끝낸 시각. 끝난 뒤 5분은 업데이트하지 않는다.</summary>
     private DateTime _lastControlUtc = DateTime.UtcNow;
     /// <summary>알림 풍선을 누르면 열 주소(업데이트 알림일 때만).</summary>
@@ -301,19 +297,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
 
     // ───────────── IInputSink ─────────────
 
-    void IInputSink.Send(Guid peer, Message message)
-    {
-        if (message is MouseMoveMessage) _sentMoves.Record(NowMs());
-        _node.Send(peer, message);
-    }
-
-    private static double NowMs() => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
-
-    private void LogMotion(string direction, Guid? peer, MotionStats stats)
-    {
-        if (stats.TakeSummary() is { } s)
-            Log.Info($"원격 이동 {direction}('{(peer is { } id ? _store.Get(id)?.Name : null) ?? "PC"}'): {s}");
-    }
+    void IInputSink.Send(Guid peer, Message message) => _node.Send(peer, message);
     void IInputSink.SetLocalCursor(int x, int y) => Win32.SetCursorPos(x, y);
     void IInputSink.HideLocalCursor() => CursorHider.Hide();
     void IInputSink.ShowLocalCursor() => CursorHider.Show();
@@ -321,7 +305,6 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
 
     void IInputSink.ControllingChanged(Guid? peer)
     {
-        LogMotion("보냄", _controlling, _sentMoves);
         _controlling = peer;
         _lastControlUtc = DateTime.UtcNow;
         _ui.BeginInvoke(UpdateTrayState);
@@ -544,8 +527,6 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
                 break;
             case EnterControlMessage e:
                 _lastControlUtc = DateTime.UtcNow;
-                LogMotion("받음", _receivedFrom, _receivedMoves);
-                _receivedFrom = peer;
                 _router.BeginControlledBy(peer);
                 _injector.MoveTo(e.X, e.Y);
                 break;
@@ -553,13 +534,11 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
                 _lastControlUtc = DateTime.UtcNow;
                 _router.EndControlledBy(peer);
                 _injector.ReleaseAll();
-                LogMotion("받음", peer, _receivedMoves);
                 break;
             case TakeOverMessage:
                 _router.OnTakeOver(peer);
                 break;
             case MouseMoveMessage m when _router.ControlledBy == peer:
-                _receivedMoves.Record(NowMs());
                 _injector.MoveTo(m.X, m.Y);
                 break;
             case MouseButtonMessage b when _router.ControlledBy == peer:
