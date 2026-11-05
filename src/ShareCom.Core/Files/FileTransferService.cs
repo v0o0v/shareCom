@@ -50,6 +50,9 @@ public sealed class FileTransferService
     public event Action<Guid, FileOffer>? SendRequested;
     public event Action<string>? Log;
 
+    /// <summary>파일을 보내거나 받는 중이거나, 상대가 받을지 답하기를 기다리는 중이다(업데이트를 미룬다).</summary>
+    public bool IsBusy => !_outgoing.IsEmpty || !_incoming.IsEmpty || !_pendingSends.IsEmpty;
+
     // ───────────── 보내는 쪽 ─────────────
 
     /// <summary>파일·폴더로 제안을 만들어 등록한다(최근 <see cref="MaxOffers"/> 개까지 들고 있다).</summary>

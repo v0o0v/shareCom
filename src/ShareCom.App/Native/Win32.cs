@@ -125,4 +125,18 @@ internal static class Win32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    /// <summary>이 세션에 마지막으로 키보드·마우스 입력이 있은 뒤 지난 시간. 읽지 못하면 0.</summary>
+    public static TimeSpan SinceLastInput()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref info)) return TimeSpan.Zero;
+        return TimeSpan.FromMilliseconds(unchecked((uint)Environment.TickCount - info.dwTime));
+    }
 }

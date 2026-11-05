@@ -19,7 +19,11 @@ public enum ConnectionMode : byte
     Pairing = (byte)'R',
 }
 
-public sealed class HandshakeException(string message) : Exception(message);
+/// <summary>연결 확인 실패. 상대 통신 버전이 나와 달라서 실패했으면 PeerVersion 에 상대 버전이 있다(아니면 0).</summary>
+public sealed class HandshakeException(string message, int peerVersion = 0) : Exception(message)
+{
+    public int PeerVersion { get; } = peerVersion;
+}
 
 public sealed record HandshakeResult(
     Stream Stream,
@@ -101,7 +105,14 @@ public static class Handshake
         NetworkStream network, DeviceIdentity me, int myListenPort, bool wantEncryption,
         Func<Guid, PeerRecord?> lookup, CancellationToken ct)
     {
-        var requested = await ReadHeaderAsync(network, ct).ConfigureAwait(false);
+        ConnectionMode requested;
+        try { requested = await ReadHeaderAsync(network, ct).ConfigureAwait(false); }
+        catch (HandshakeException ex) when (ex.PeerVersion != 0)
+        {
+            // 버전이 다르면 내 머리말을 돌려주고 끊는다. 상대가 내 버전을 알고 업데이트를 확인할 수 있게.
+            try { await WriteHeaderAsync(network, ConnectionMode.Plain, ct).ConfigureAwait(false); } catch { }
+            throw;
+        }
         var chosen = requested switch
         {
             ConnectionMode.Pairing => ConnectionMode.Pairing,
@@ -184,7 +195,7 @@ public static class Handshake
         var header = new byte[6];
         await s.ReadExactlyAsync(header, ct).ConfigureAwait(false);
         if (!header.AsSpan(0, 4).SequenceEqual(Magic)) throw new HandshakeException("ShareCom 연결이 아닙니다.");
-        if (header[4] != MessageCodec.ProtocolVersion) throw new HandshakeException($"버전이 다릅니다(상대 {header[4]}, 나 {MessageCodec.ProtocolVersion}). 두 PC의 ShareCom 을 같은 버전으로 맞춰 주세요.");
+        if (header[4] != MessageCodec.ProtocolVersion) throw new HandshakeException($"버전이 다릅니다(상대 {header[4]}, 나 {MessageCodec.ProtocolVersion}). 두 PC의 ShareCom 을 같은 버전으로 맞춰 주세요.", header[4]);
         var mode = (ConnectionMode)header[5];
         if (mode is not (ConnectionMode.Tls or ConnectionMode.Plain or ConnectionMode.Pairing))
             throw new HandshakeException("알 수 없는 연결 모드입니다.");

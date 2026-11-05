@@ -13,3 +13,5 @@ TestResults/
 *.keystore
 .env
 .claude/*.lock
+*.key
+*.sharecom-backup

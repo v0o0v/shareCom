@@ -22,7 +22,8 @@ Control 2–4 Windows PCs on the same Wi-Fi network with a single mouse and keyb
 - Clipboard sharing: plain text, rich text (HTML, RTF) and images (PNG), with no size limit. Mouse and keyboard input takes priority even while a large clipboard item is being sent. Content that password managers mark as "do not share" is never sent.
 - File transfer: copy files in File Explorer on one PC and paste them in File Explorer on another; the contents are fetched from the source PC at the moment you paste (whole folders, no size limit). You can also pick files through **Send files** (`파일 보내기`) in the tray menu; the receiving PC chooses **Accept** (`받기`) / **Decline** (`거절`), and files are saved to `Downloads\shareCom` (duplicates become `name (2)`).
 - Start at sign-in: registered in Task Scheduler with highest privileges, so it starts without a UAC prompt. You are asked once on first run, and can change it in **Settings…**.
-- Settings window: start at sign-in, clipboard sharing, encryption, edge lock, hotkeys, and information about this PC.
+- Settings window: start at sign-in, clipboard sharing, encryption, edge lock, hotkeys, automatic updates, and information about this PC.
+- Automatic updates (from v0.6.0): checks the latest GitHub release every 6 hours, verifies its signature, downloads it, and swaps it in once this PC has been idle for 5 minutes. If the new version fails to start, it rolls back to the previous one. You can turn it off or click **Check now** (`지금 확인`) in **Settings…**. Users of v0.5.x need to replace the exe with v0.6.0 by hand once.
 
 ## Getting started
 
@@ -63,5 +64,7 @@ To try it during development without a UAC prompt, build with `-p:NoAdmin=true`.
 | `src/ShareCom.Core` | Protocol, connection / pairing / reconnection (`Node`), input routing (`InputRouter`), layout math and sync (`DeskLayout`, `LayoutSync`), automatic introduction (`TrustSync`), clipboard sync, file transfer (`FileTransferService`). Uses no Windows APIs. |
 | `src/ShareCom.App` | Tray UI, layout editor (`LayoutEditorForm`), low-level input hooks, `SendInput` playback, clipboard watcher, virtual files for File Explorer (`VirtualFileDataObject`), settings storage, firewall |
 | `tests/ShareCom.Core.Tests` | Automated tests |
+| `tools/ShareCom.ReleaseTool` | Update signing keys: generate, sign, verify, back up |
+| `scripts/release.ps1` | Test, build, sign and publish a GitHub release in one go |
 
 Settings and logs are stored in `%APPDATA%\ShareCom\`.
