@@ -92,6 +92,8 @@ public static class MessageCodec
             case MouseWheelMessage x: w.Write(x.Delta); w.Write(x.Horizontal); break;
             case KeyMessage x: w.Write(x.VirtualKey); w.Write(x.ScanCode); w.Write(x.Extended); w.Write(x.Down); break;
             case TakeOverMessage: break;
+            case BlobChunkMessage x:
+                w.Write(x.BlobId); w.Write((byte)x.Kind); w.Write(x.TotalLength); w.Write(x.Offset); WriteBytes(w, x.Data); break;
             default: throw new NotSupportedException($"알 수 없는 메시지: {m.GetType().Name}");
         }
     }
@@ -112,6 +114,7 @@ public static class MessageCodec
         MessageType.MouseWheel => new MouseWheelMessage(r.ReadInt32(), r.ReadBoolean()),
         MessageType.Key => new KeyMessage(r.ReadUInt16(), r.ReadUInt16(), r.ReadBoolean(), r.ReadBoolean()),
         MessageType.TakeOver => new TakeOverMessage(),
+        MessageType.BlobChunk => new BlobChunkMessage(r.ReadUInt32(), (BlobKind)r.ReadByte(), r.ReadInt64(), r.ReadInt64(), ReadBytes(r)),
         _ => throw new InvalidDataException($"알 수 없는 메시지 종류: {(byte)type}"),
     };
 

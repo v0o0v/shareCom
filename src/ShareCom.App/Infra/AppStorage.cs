@@ -9,6 +9,7 @@ internal sealed class AppSettings
     public Guid DeviceId { get; set; }
     public bool EncryptionEnabled { get; set; } = true;
     public bool EdgeLocked { get; set; }
+    public bool ClipboardEnabled { get; set; } = true;
     public List<PeerRecord> Peers { get; set; } = new();
 }
 

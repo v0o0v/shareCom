@@ -1,0 +1,129 @@
+using System.Drawing.Imaging;
+using System.Text;
+using ShareCom.App.Clipboard;
+using ShareCom.Core.Clipboard;
+
+namespace ShareCom.App;
+
+/// <summary>
+/// 진단 명령. <c>ShareCom.exe --selftest-clipboard 결과파일</c>
+/// 클립보드에 시험 내용을 썼다가 다시 읽어 형식마다 같은지 본다. 끝나면 원래 클립보드 내용을 되돌린다.
+/// </summary>
+internal static class SelfTest
+{
+    public static int RunClipboard(string outputPath)
+    {
+        var report = new StringBuilder();
+        int failures = 0;
+        var backup = Backup();
+        try
+        {
+            var png = MakePng();
+            var html = "Version:0.9\r\nStartHTML:0000000105\r\nEndHTML:0000000183\r\nStartFragment:0000000141\r\nEndFragment:0000000147\r\n<html><body><!--StartFragment--><b>한글</b><!--EndFragment--></body></html>";
+            var sent = new ClipboardContent([
+                new ClipboardItem(ClipboardFormats.Text, Encoding.UTF8.GetBytes("ShareCom 시험 글자 😀")),
+                new ClipboardItem(ClipboardFormats.Html, Encoding.UTF8.GetBytes(html)),
+                new ClipboardItem(ClipboardFormats.Rtf, Encoding.UTF8.GetBytes(@"{\rtf1\ansi {\b bold} text}")),
+                new ClipboardItem(ClipboardFormats.Png, png),
+            ]);
+            ClipboardIo.Write(sent);
+            var back = ClipboardIo.Read();
+            if (back is null)
+            {
+                report.AppendLine("FAIL read returned null");
+                failures++;
+            }
+            else
+            {
+                foreach (var item in sent.Items)
+                {
+                    var got = back.Get(item.Format);
+                    bool ok = got is not null && (item.Format == ClipboardFormats.Png
+                        ? SamePixels(item.Data, got.Data)
+                        : TrimNull(got.Data).SequenceEqual(item.Data));
+                    if (!ok) failures++;
+                    report.AppendLine($"{(ok ? "OK  " : "FAIL")} {item.Format} sent={item.Data.Length} got={got?.Data.Length.ToString() ?? "none"}");
+                }
+                // 다시 읽어도 같은 해시가 나와야 되돌림이 생기지 않는다.
+                var again = ClipboardIo.Read();
+                bool stable = again?.Hash == back.Hash;
+                if (!stable) failures++;
+                report.AppendLine($"{(stable ? "OK  " : "FAIL")} stable-hash");
+            }
+        }
+        catch (Exception ex)
+        {
+            failures++;
+            report.AppendLine("FAIL exception " + ex);
+        }
+        finally
+        {
+            Restore(backup);
+        }
+        report.AppendLine(failures == 0 ? "RESULT PASS" : $"RESULT FAIL {failures}");
+        File.WriteAllText(outputPath, report.ToString(), Encoding.UTF8);
+        return failures == 0 ? 0 : 1;
+    }
+
+    private static byte[] TrimNull(byte[] data)
+    {
+        int n = data.Length;
+        while (n > 0 && data[n - 1] == 0) n--;
+        return data[..n];
+    }
+
+    private static byte[] MakePng()
+    {
+        using var bmp = new Bitmap(3, 2, PixelFormat.Format32bppArgb);
+        bmp.SetPixel(0, 0, Color.FromArgb(255, 255, 0, 0));
+        bmp.SetPixel(1, 0, Color.FromArgb(128, 0, 255, 0));
+        bmp.SetPixel(2, 0, Color.FromArgb(0, 0, 0, 255));
+        bmp.SetPixel(0, 1, Color.White);
+        bmp.SetPixel(1, 1, Color.Black);
+        bmp.SetPixel(2, 1, Color.FromArgb(255, 10, 20, 30));
+        using var ms = new MemoryStream();
+        bmp.Save(ms, ImageFormat.Png);
+        return ms.ToArray();
+    }
+
+    private static bool SamePixels(byte[] a, byte[] b)
+    {
+        using var ia = new Bitmap(new MemoryStream(a));
+        using var ib = new Bitmap(new MemoryStream(b));
+        if (ia.Size != ib.Size) return false;
+        for (int y = 0; y < ia.Height; y++)
+            for (int x = 0; x < ia.Width; x++)
+                if (ia.GetPixel(x, y).ToArgb() != ib.GetPixel(x, y).ToArgb()) return false;
+        return true;
+    }
+
+    private static DataObject? Backup()
+    {
+        try
+        {
+            var src = System.Windows.Forms.Clipboard.GetDataObject();
+            if (src is null) return null;
+            var copy = new DataObject();
+            foreach (var f in src.GetFormats(autoConvert: false))
+            {
+                try
+                {
+                    if (src.TryGetData(f, out object? value) && value is not null) copy.SetData(f, value);
+                }
+                catch { /* 옮길 수 없는 형식은 건너뛴다 */ }
+            }
+            return copy;
+        }
+        catch { return null; }
+    }
+
+    private static void Restore(DataObject? backup)
+    {
+        try
+        {
+            if (backup is null) System.Windows.Forms.Clipboard.Clear();
+            else System.Windows.Forms.Clipboard.SetDataObject(backup, copy: true, retryTimes: 5, retryDelay: 100);
+        }
+        catch { }
+    }
+}

@@ -6,14 +6,20 @@ namespace ShareCom.App;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--selftest-clipboard")
+        {
+            ApplicationConfiguration.Initialize();
+            return SelfTest.RunClipboard(args[1]);
+        }
+
         using var mutex = new Mutex(true, @"Global\ShareCom-SingleInstance-v1", out bool first);
         if (!first)
         {
             MessageBox.Show("ShareCom 이 이미 실행 중입니다. 작업 표시줄 오른쪽 트레이 아이콘을 확인하세요.",
                 "ShareCom", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            return 0;
         }
 
         Log.Init(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShareCom"));
@@ -47,5 +53,6 @@ internal static class Program
             CursorHider.RestoreNow();
             Log.Flush();
         }
+        return 0;
     }
 }

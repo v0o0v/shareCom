@@ -69,7 +69,7 @@ public class NodeTests
         PairingTimeout = TimeSpan.FromSeconds(10),
     };
 
-    private static TestNode Make(FakeDiscoveryHub hub, string name, bool encryption = true,
+    internal static TestNode Make(FakeDiscoveryHub hub, string name, bool encryption = true,
         DeviceIdentity? identity = null, MemoryPeerStore? store = null, int port = 0, bool silent = false)
     {
         identity ??= DeviceIdentity.Create(Guid.NewGuid(), name);
@@ -97,7 +97,7 @@ public class NodeTests
 
     private static IPEndPoint Ep(TestNode n) => new(IPAddress.Loopback, n.Node.ListeningPort);
 
-    private static async Task PairAndConnect(TestNode a, TestNode b)
+    internal static async Task PairAndConnect(TestNode a, TestNode b)
     {
         var result = await a.Node.PairAsync(Ep(b));
         Assert.Equal(PairingOutcome.Paired, result.Outcome);

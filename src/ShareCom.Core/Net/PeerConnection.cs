@@ -14,7 +14,9 @@ public sealed class PeerConnection
 {
     private readonly TcpClient _tcp;
     private readonly Stream _stream;
+    // 우선 줄(입력·생존 신호)과 대량 줄(클립보드·파일 조각). 우선 줄을 늘 먼저 보낸다.
     private readonly Channel<Message> _outbox = Channel.CreateUnbounded<Message>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<Message> _bulk = Channel.CreateUnbounded<Message>(new UnboundedChannelOptions { SingleReader = true });
     private readonly CancellationTokenSource _cts = new();
     private readonly TimeSpan _pingInterval;
     private readonly TimeSpan _timeout;
@@ -59,6 +61,12 @@ public sealed class PeerConnection
 
     public bool Send(Message message) => !IsClosed && _outbox.Writer.TryWrite(message);
 
+    /// <summary>늦게 가도 되는 큰 데이터 조각. 우선 줄이 비어 있을 때만 보낸다.</summary>
+    public bool SendBulk(Message message) => !IsClosed && _bulk.Writer.TryWrite(message);
+
+    /// <summary>이 연결로 받는 조각을 합친다. 읽기 루프에서만 쓴다.</summary>
+    internal BlobAssembler Assembler { get; } = new();
+
     private async Task ReadLoop()
     {
         try
@@ -87,8 +95,22 @@ public sealed class PeerConnection
     {
         try
         {
-            await foreach (var m in _outbox.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
-                await MessageCodec.WriteAsync(_stream, m, _cts.Token).ConfigureAwait(false);
+            var ct = _cts.Token;
+            // 기다리는 작업은 끝날 때까지 다시 쓴다(매번 새로 만들면 한쪽 줄에 대기가 쌓인다).
+            Task<bool>? high = null, low = null;
+            while (!ct.IsCancellationRequested)
+            {
+                if (_outbox.Reader.TryRead(out var m) || _bulk.Reader.TryRead(out m))
+                {
+                    await MessageCodec.WriteAsync(_stream, m, ct).ConfigureAwait(false);
+                    continue;
+                }
+                high ??= _outbox.Reader.WaitToReadAsync(ct).AsTask();
+                low ??= _bulk.Reader.WaitToReadAsync(ct).AsTask();
+                var done = await Task.WhenAny(high, low).ConfigureAwait(false);
+                if (!await done.ConfigureAwait(false)) break; // 줄이 닫힘
+                if (done == high) high = null; else low = null;
+            }
         }
         catch (Exception) { /* 끊김 */ }
         Close();
@@ -114,6 +136,7 @@ public sealed class PeerConnection
     {
         if (Interlocked.Exchange(ref _closed, 1) != 0) return;
         _outbox.Writer.TryComplete();
+        _bulk.Writer.TryComplete();
         _cts.Cancel();
         try { _stream.Dispose(); } catch { }
         try { _tcp.Dispose(); } catch { }

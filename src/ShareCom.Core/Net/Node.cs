@@ -70,6 +70,8 @@ public sealed class Node : IAsyncDisposable
     public event Action<Guid>? PeerConnected;
     public event Action<Guid>? PeerDisconnected;
     public event Action<Guid, Message>? MessageReceived;
+    /// <summary>큰 데이터가 다 모였다(보낸 PC, 종류, 내용).</summary>
+    public event Action<Guid, BlobKind, byte[]>? BlobReceived;
     public event Action? DiscoveredChanged;
     public event Action<PairingResult>? PairingCompleted;
     /// <summary>진단용 기록.</summary>
@@ -99,6 +101,23 @@ public sealed class Node : IAsyncDisposable
         lock (_gate) _connections.TryGetValue(peer, out c);
         return c?.Send(message) ?? false;
     }
+
+    /// <summary>
+    /// 큰 데이터를 64KB 조각으로 나눠 대량 줄로 보낸다. 마우스·키보드 메시지가 늘 먼저 간다.
+    /// 받는 쪽에서는 다 모이면 <see cref="BlobReceived"/> 가 한 번 일어난다.
+    /// </summary>
+    public bool SendBlob(Guid peer, BlobKind kind, byte[] data)
+    {
+        PeerConnection? c;
+        lock (_gate) _connections.TryGetValue(peer, out c);
+        if (c is null) return false;
+        var id = unchecked((uint)Interlocked.Increment(ref _nextBlobId));
+        foreach (var chunk in BlobAssembler.Split(id, kind, data))
+            if (!c.SendBulk(chunk)) return false;
+        return true;
+    }
+
+    private int _nextBlobId;
 
     /// <summary>최근에 검색된 PC들(짝 맺은 PC 포함).</summary>
     public IReadOnlyList<DiscoveredPeer> Discovered
@@ -258,7 +277,23 @@ public sealed class Node : IAsyncDisposable
             _lastConnectedUtc[h.PeerId] = DateTime.UtcNow;
         }
 
-        conn.MessageReceived += (c, m) => MessageReceived?.Invoke(c.PeerId, m);
+        conn.MessageReceived += (c, m) =>
+        {
+            if (m is not BlobChunkMessage chunk)
+            {
+                MessageReceived?.Invoke(c.PeerId, m);
+                return;
+            }
+            (BlobKind Kind, byte[] Data)? done;
+            try { done = c.Assembler.Add(chunk); }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"잘못된 데이터 조각을 받아 연결을 끊습니다: {ex.Message}");
+                c.Close();
+                return;
+            }
+            if (done is { } d) BlobReceived?.Invoke(c.PeerId, d.Kind, d.Data);
+        };
         conn.Closed += OnConnectionClosed;
         conn.Start();
         replaced?.Close(); // 이미 목록에서 빠졌으므로 끊김 알림은 나가지 않는다
