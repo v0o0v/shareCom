@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using ShareCom.App.Infra;
+using ShareCom.Core.Input;
 using ShareCom.Core.Protocol;
 using static ShareCom.App.Native.Win32;
 
@@ -52,18 +53,19 @@ internal sealed class InputInjector
     public void Key(KeyMessage k)
     {
         lock (_gate) { if (k.Down) _keysDown[k.VirtualKey] = k; else _keysDown.Remove(k.VirtualKey); }
+        var plan = KeyInjectionPlan.For(k, code => MapVirtualKey(code, MAPVK_VSC_TO_VK_EX), VirtualKeyOnly.Contains(k.VirtualKey));
         var ki = new KEYBDINPUT();
         uint flags = k.Down ? 0 : KEYEVENTF_KEYUP;
-        if (k.Extended) flags |= KEYEVENTF_EXTENDEDKEY;
-        if (k.ScanCode != 0 && !VirtualKeyOnly.Contains(k.VirtualKey))
+        if (plan.Extended) flags |= KEYEVENTF_EXTENDEDKEY;
+        if (plan.ByScanCode)
         {
-            ki.wScan = k.ScanCode;
+            ki.wScan = plan.ScanCode;
             flags |= KEYEVENTF_SCANCODE;
         }
         else
         {
-            ki.wVk = k.VirtualKey;
-            ki.wScan = (ushort)MapVirtualKey(k.VirtualKey, MAPVK_VK_TO_VSC);
+            ki.wVk = plan.VirtualKey;
+            ki.wScan = (ushort)MapVirtualKey(plan.VirtualKey, MAPVK_VK_TO_VSC);
         }
         ki.dwFlags = flags;
         Send(new INPUT { type = INPUT_KEYBOARD, u = new InputUnion { ki = ki } });
