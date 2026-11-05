@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using ShareCom.Core.Identity;
+using ShareCom.Core.Input;
 using ShareCom.Core.Protocol;
 
 namespace ShareCom.App.Infra;
@@ -16,6 +17,12 @@ internal sealed class AppSettings
     public Dictionary<Guid, long> RevokedPeers { get; set; } = new();
     /// <summary>모든 PC가 함께 쓰는 화면 배치(마지막으로 받은 판).</summary>
     public LayoutDoc? Layout { get; set; }
+    /// <summary>바꿀 수 있는 단축키. 없으면 기본값.</summary>
+    public HotkeySettings? Hotkeys { get; set; }
+    /// <summary>첫 실행 때 자동 시작을 켤지 이미 물었다.</summary>
+    public bool AutoStartAsked { get; set; }
+    /// <summary>자동 시작에 등록한 exe 경로. exe 를 옮기면 다시 등록한다.</summary>
+    public string? AutoStartPath { get; set; }
 }
 
 /// <summary>

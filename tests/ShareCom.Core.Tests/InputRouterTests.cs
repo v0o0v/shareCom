@@ -243,6 +243,62 @@ public class InputRouterTests
     }
 
     [Fact]
+    public void 바로_이동_수정키를_바꾸면_그_조합만_정확히_먹는다()
+    {
+        _router.Hotkeys = new HotkeySettings(InputRouter.VkScrollLock, HotkeyModifiers.Ctrl | HotkeyModifiers.Shift);
+
+        // 예전 조합 Ctrl+Alt+2 는 그대로 내 PC에 흘린다
+        _router.OnKey(InputRouter.VkLControl, 0x1D, false, true, false);
+        _router.OnKey(InputRouter.VkLMenu, 0x38, false, true, false);
+        Assert.False(_router.OnKey(0x32, 0x03, false, true, false));
+        _router.OnKey(0x32, 0x03, false, false, false);
+        Assert.Null(_router.Controlling);
+
+        // Ctrl+Alt+Shift+2 도 정확히 같은 조합이 아니라 먹지 않는다
+        _router.OnKey(InputRouter.VkLShift, 0x2A, false, true, false);
+        Assert.False(_router.OnKey(0x32, 0x03, false, true, false));
+        _router.OnKey(0x32, 0x03, false, false, false);
+        Assert.Null(_router.Controlling);
+
+        // Alt 를 떼면 Ctrl+Shift+2
+        _router.OnKey(InputRouter.VkLMenu, 0x38, false, false, false);
+        Assert.True(_router.OnKey(0x32, 0x03, false, true, false));
+        Assert.Equal(Peer, _router.Controlling);
+    }
+
+    [Fact]
+    public void 바로_이동을_끄면_숫자는_그대로_간다()
+    {
+        _router.Hotkeys = new HotkeySettings(InputRouter.VkScrollLock, HotkeyModifiers.None);
+        _router.OnKey(InputRouter.VkLControl, 0x1D, false, true, false);
+        _router.OnKey(InputRouter.VkLMenu, 0x38, false, true, false);
+        Assert.False(_router.OnKey(0x32, 0x03, false, true, false));
+        Assert.Null(_router.Controlling);
+    }
+
+    [Fact]
+    public void 잠금_키를_Pause로_바꾸면_Scroll_Lock은_잠그지_않는다()
+    {
+        _router.Hotkeys = new HotkeySettings(HotkeySettings.VkPause, HotkeyModifiers.Ctrl | HotkeyModifiers.Alt);
+        _router.OnKey(InputRouter.VkScrollLock, 0x46, false, true, false);
+        Assert.False(_router.EdgeLocked);
+        _router.OnKey(HotkeySettings.VkPause, 0x45, false, true, false);
+        Assert.True(_router.EdgeLocked);
+
+        _router.Hotkeys = new HotkeySettings(0, HotkeyModifiers.Ctrl | HotkeyModifiers.Alt); // 쓰지 않음
+        _router.OnKey(HotkeySettings.VkPause, 0x45, false, false, false);
+        _router.OnKey(HotkeySettings.VkPause, 0x45, false, true, false);
+        Assert.True(_router.EdgeLocked);
+    }
+
+    [Fact]
+    public void 고를_수_없는_단축키_값은_기본값으로_되돌린다()
+    {
+        _router.Hotkeys = new HotkeySettings(0x41, HotkeyModifiers.Shift);
+        Assert.Equal(HotkeySettings.Default, _router.Hotkeys);
+    }
+
+    [Fact]
     public void 조작하던_PC와_연결이_끊기면_곧바로_돌아온다()
     {
         EnterRight();

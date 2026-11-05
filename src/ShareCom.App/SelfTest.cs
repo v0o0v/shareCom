@@ -35,6 +35,47 @@ internal static class SelfTest
         return 0;
     }
 
+    /// <summary><c>ShareCom.exe --selftest-settings 그림.png</c>: 설정 창을 그림으로 저장한다.</summary>
+    public static int RenderSettings(string outputPath)
+    {
+        var values = new UI.SettingsValues(true, true, true, false, ShareCom.Core.Input.HotkeySettings.Default);
+        var info = new UI.SettingsInfo(Environment.MachineName, "FDD14CBB08F8C2A9…", "0.5.0", Infra.SystemSetup.IsAdministrator());
+        using var form = new UI.SettingsForm(values, info, () => { });
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-4000, -4000);
+        form.Show();
+        Application.DoEvents();
+        using var bmp = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.Size));
+        bmp.Save(outputPath, ImageFormat.Png);
+        form.Close();
+        return 0;
+    }
+
+    /// <summary>
+    /// <c>ShareCom.exe --selftest-autostart 결과파일</c>: 관리자 권한에서 자동 시작을 등록 → 확인 → 해제 → 확인한다.
+    /// 원래 등록돼 있었으면 끝난 뒤 다시 등록해 둔다. 결과 파일 첫 줄은 PASS 또는 FAIL.
+    /// </summary>
+    public static int RunAutoStart(string outputPath)
+    {
+        var report = new StringBuilder();
+        bool ok = true;
+        void Check(bool cond, string what) { report.AppendLine($"{(cond ? "[OK]" : "[FAIL]")} {what}"); ok &= cond; }
+        var exe = Environment.ProcessPath!;
+        Check(Infra.SystemSetup.IsAdministrator(), "관리자 권한");
+        bool before = Infra.AutoStart.IsRegistered();
+        report.AppendLine($"원래 등록 상태: {before}");
+        var err = Infra.AutoStart.Register(exe);
+        Check(err is null, $"등록 {err}");
+        Check(Infra.AutoStart.IsRegistered(), "등록 뒤 조회됨");
+        err = Infra.AutoStart.Unregister();
+        Check(err is null, $"해제 {err}");
+        Check(!Infra.AutoStart.IsRegistered(), "해제 뒤 조회 안 됨");
+        if (before) Infra.AutoStart.Register(exe);
+        File.WriteAllText(outputPath, (ok ? "PASS" : "FAIL") + "\n" + report);
+        return ok ? 0 : 1;
+    }
+
     public static int RunClipboard(string outputPath)
     {
         var report = new StringBuilder();

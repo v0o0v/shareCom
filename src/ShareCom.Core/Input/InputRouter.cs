@@ -25,6 +25,7 @@ public sealed class InputRouter
 {
     public const ushort VkEscape = 0x1B, VkScrollLock = 0x91;
     public const ushort VkLControl = 0xA2, VkRControl = 0xA3, VkLMenu = 0xA4, VkRMenu = 0xA5, VkControl = 0x11, VkMenu = 0x12;
+    public const ushort VkLShift = 0xA0, VkRShift = 0xA1, VkShift = 0x10;
     public const ushort Vk1 = 0x31, Vk4 = 0x34;
 
     /// <summary>화면 위·아래 모서리에서 이만큼은 넘어가지 않는다(최대화 창의 닫기 버튼 누르기 등).</summary>
@@ -54,6 +55,7 @@ public sealed class InputRouter
     private int _takeOverAccum;
 
     private bool _edgeLocked;
+    private HotkeySettings _hotkeys = HotkeySettings.Default;
     private int _lastX, _lastY;
     private bool _hasLast;
 
@@ -76,6 +78,13 @@ public sealed class InputRouter
     }
 
     public event Action<bool>? EdgeLockChanged;
+
+    /// <summary>바꿀 수 있는 단축키(잠금 키, 바로 이동 수정키).</summary>
+    public HotkeySettings Hotkeys
+    {
+        get { lock (_gate) return _hotkeys; }
+        set { lock (_gate) _hotkeys = value.Normalize(); }
+    }
 
     // ───────────── 화면·상대 정보 ─────────────
 
@@ -394,7 +403,9 @@ public sealed class InputRouter
         {
             bool ctrl = _physicalKeys.Contains(VkLControl) || _physicalKeys.Contains(VkRControl) || _physicalKeys.Contains(VkControl);
             bool alt = _physicalKeys.Contains(VkLMenu) || _physicalKeys.Contains(VkRMenu) || _physicalKeys.Contains(VkMenu);
-            if (vk == VkScrollLock)
+            bool shift = _physicalKeys.Contains(VkLShift) || _physicalKeys.Contains(VkRShift) || _physicalKeys.Contains(VkShift);
+            var mods = (ctrl ? HotkeyModifiers.Ctrl : 0) | (alt ? HotkeyModifiers.Alt : 0) | (shift ? HotkeyModifiers.Shift : 0);
+            if (_hotkeys.LockKey != 0 && vk == _hotkeys.LockKey)
             {
                 _edgeLocked = !_edgeLocked;
                 lockChanged = _edgeLocked;
@@ -407,7 +418,7 @@ public sealed class InputRouter
                 if (_controlling is not null) EndControlLocked(sendLeave: true, _park);
                 return true;
             }
-            if (ctrl && alt && vk >= Vk1 && vk <= Vk4)
+            if (_hotkeys.JumpModifiers != HotkeyModifiers.None && mods == _hotkeys.JumpModifiers && vk >= Vk1 && vk <= Vk4)
             {
                 _swallowUps.Add(vk);
                 JumpLocked(vk - Vk1);

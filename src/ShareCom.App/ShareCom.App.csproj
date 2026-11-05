@@ -10,7 +10,7 @@
     <RootNamespace>ShareCom.App</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.1.0</Version>
+    <Version>0.5.0</Version>
     <!-- 기본은 관리자 권한 실행. 개발 중 UAC 없이 띄워 볼 때만 -p:NoAdmin=true -->
     <ApplicationManifest Condition="'$(NoAdmin)' != 'true'">app.manifest</ApplicationManifest>
     <ApplicationManifest Condition="'$(NoAdmin)' == 'true'">app.noadmin.manifest</ApplicationManifest>
