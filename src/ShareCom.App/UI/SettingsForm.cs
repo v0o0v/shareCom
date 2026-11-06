@@ -9,7 +9,8 @@ internal sealed record SettingsValues(
     bool EncryptionEnabled,
     bool EdgeLocked,
     HotkeySettings Hotkeys,
-    bool AutoUpdate);
+    bool AutoUpdate,
+    bool VerboseLog);
 
 /// <summary>이 PC 정보(읽기 전용 표시).</summary>
 internal sealed record SettingsInfo(string PcName, string Thumbprint, string Version, bool CanChangeAutoStart, string UpdateStatus = "");
@@ -17,7 +18,7 @@ internal sealed record SettingsInfo(string PcName, string Thumbprint, string Ver
 /// <summary>설정 창. [확인]을 누르면 <see cref="Result"/> 에 고른 값이 담긴다.</summary>
 internal sealed class SettingsForm : Form
 {
-    private readonly CheckBox _autoStart, _clipboard, _encryption, _edgeLocked, _autoUpdate;
+    private readonly CheckBox _autoStart, _clipboard, _encryption, _edgeLocked, _autoUpdate, _verboseLog;
     private readonly Label _updateStatus;
     private readonly ComboBox _lockKey, _jumpMods;
     private readonly Label _jumpHint;
@@ -105,6 +106,9 @@ internal sealed class SettingsForm : Form
         about.Controls.Add(new Label { Text = $"이름: {info.PcName}", AutoSize = true });
         about.Controls.Add(new Label { Text = $"인증서 지문: {info.Thumbprint}", AutoSize = true });
         about.Controls.Add(new Label { Text = $"버전: {info.Version}", AutoSize = true });
+        _verboseLog = Check("문제 확인용 자세한 기록 남기기", values.VerboseLog);
+        about.Controls.Add(_verboseLog);
+        about.Controls.Add(Hint("끄면 오류와 연결·업데이트 같은 큰 일만 남깁니다. 켜면 연결 재시도, 클립보드·파일 오감까지 남깁니다.\n같은 기록이 되풀이되면 10분에 한 번만 적고, 기록 파일은 모두 합쳐 약 2MB를 넘지 않습니다."));
         var logs = new LinkLabel { Text = "기록 폴더 열기", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
         logs.LinkClicked += (_, _) => openLogFolder();
         about.Controls.Add(logs);
@@ -135,7 +139,8 @@ internal sealed class SettingsForm : Form
             new HotkeySettings(
                 HotkeySettings.LockKeyChoices[_lockKey.SelectedIndex].Key,
                 HotkeySettings.JumpModifierChoices[_jumpMods.SelectedIndex]),
-            _autoUpdate.Checked);
+            _autoUpdate.Checked,
+            _verboseLog.Checked);
         DialogResult = DialogResult.OK;
         Close();
     }

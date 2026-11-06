@@ -38,7 +38,7 @@ internal static class SelfTest
     /// <summary><c>ShareCom.exe --selftest-settings 그림.png</c>: 설정 창을 그림으로 저장한다.</summary>
     public static int RenderSettings(string outputPath)
     {
-        var values = new UI.SettingsValues(true, true, true, false, ShareCom.Core.Input.HotkeySettings.Default, true);
+        var values = new UI.SettingsValues(true, true, true, false, ShareCom.Core.Input.HotkeySettings.Default, true, false);
         var info = new UI.SettingsInfo(Environment.MachineName, "FDD14CBB08F8C2A9…", "0.6.0", Infra.SystemSetup.IsAdministrator(),
             "최신 버전입니다(확인 17:40).");
         using var form = new UI.SettingsForm(values, info, () => { }, () => Task.FromResult("최신 버전입니다."));
@@ -139,6 +139,7 @@ internal static class SelfTest
     public static int ServeFiles(string sourceDir, int seconds)
     {
         ShareCom.App.Infra.Log.Init(Path.GetDirectoryName(Path.GetFullPath(sourceDir))!);
+        ShareCom.App.Infra.Log.VerboseEnabled = true; // 진단 명령이므로 자세히 남긴다
         var backup = Backup();
         var local = ShareCom.Core.Files.LocalOffer.Build(Directory.EnumerateFileSystemEntries(sourceDir));
         var obj = new VirtualFileDataObject(local.Offer, i => new ForwardOnlyStream(File.OpenRead(local.FullPaths[i])), "시험");

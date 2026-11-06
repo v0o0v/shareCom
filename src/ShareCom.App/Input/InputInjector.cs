@@ -90,6 +90,6 @@ internal sealed class InputInjector
     private static void Send(INPUT input)
     {
         if (SendInput(1, [input], InputSize) == 0)
-            Log.Debug($"SendInput 실패 (오류 {Marshal.GetLastWin32Error()}) - 보안 화면(UAC·잠금)일 수 있음");
+            if (Log.VerboseEnabled) Log.Debug($"SendInput 실패 (오류 {Marshal.GetLastWin32Error()}) - 보안 화면(UAC·잠금)일 수 있음");
     }
 }

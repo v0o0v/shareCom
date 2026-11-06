@@ -87,7 +87,7 @@ internal sealed class VirtualFileDataObject : ComIDataObject
             if (index < 0 || index >= _offer.Entries.Count || _offer.Entries[index].IsDirectory)
                 throw new COMException("잘못된 파일 순번", DV_E_LINDEX);
             var entry = _offer.Entries[index];
-            Log.Info($"붙여넣기: '{_sourceName}' 에서 {entry.RelativePath} 받는 중 ({entry.Size:N0}바이트)");
+            Log.Verbose($"붙여넣기: '{_sourceName}' 에서 {entry.RelativePath} 받는 중 ({entry.Size:N0}바이트)");
             var stream = new ComStream(_open(index), entry.Size, Path.GetFileName(entry.RelativePath));
             medium = new STGMEDIUM
             {

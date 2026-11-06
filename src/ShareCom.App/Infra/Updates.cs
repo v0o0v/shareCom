@@ -66,7 +66,7 @@ internal sealed class UpdateService : IDisposable
             if (DateTime.UtcNow - _lastPeerTrigger < UpdatePolicy.PeerTriggerInterval) return;
             _lastPeerTrigger = DateTime.UtcNow;
         }
-        Log.Info($"상대 PC의 통신 버전({peerProtocol})이 더 높아 업데이트를 확인합니다.");
+        Log.Verbose($"상대 PC의 통신 버전({peerProtocol})이 더 높아 업데이트를 확인합니다.");
         _ = SafeCheckAsync(manual: false);
     }
 
@@ -77,7 +77,7 @@ internal sealed class UpdateService : IDisposable
         catch (Exception ex)
         {
             Status = $"확인하지 못했습니다({DateTime.Now:HH:mm}): {ex.Message}";
-            Log.Info("업데이트 확인 실패: " + ex.Message);
+            Log.Verbose("업데이트 확인 실패: " + ex.Message);
         }
     }
 
@@ -91,7 +91,7 @@ internal sealed class UpdateService : IDisposable
         if (!manual && NetworkCost.IsMetered())
         {
             Status = $"데이터 통신(종량제) 연결이라 확인을 미뤘습니다({DateTime.Now:HH:mm}).";
-            Log.Info("종량제 연결이라 업데이트 확인을 미룹니다.");
+            Log.Verbose("종량제 연결이라 업데이트 확인을 미룹니다.");
             return null;
         }
         await _checking.WaitAsync(_cts.Token).ConfigureAwait(false);
@@ -143,7 +143,7 @@ internal sealed class UpdateService : IDisposable
             var reason = UpdatePolicy.BlockReason(_conditions(), manual: false);
             if (reason is not null)
             {
-                if (reason != _lastBlockReason) Log.Info($"업데이트 {ready.VersionText} 적용을 미룹니다: {reason}");
+                if (reason != _lastBlockReason) Log.Verbose($"업데이트 {ready.VersionText} 적용을 미룹니다: {reason}");
                 _lastBlockReason = reason;
                 return;
             }
@@ -214,7 +214,7 @@ internal static class NetworkCost
         }
         catch (Exception ex)
         {
-            Log.Info("연결 요금 종류를 읽지 못했습니다: " + ex.Message);
+            Log.Verbose("연결 요금 종류를 읽지 못했습니다: " + ex.Message);
             return false;
         }
         finally
