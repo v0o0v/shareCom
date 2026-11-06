@@ -59,6 +59,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         _ui.CreateControl(); // UI 스레드로 넘기는 BeginInvoke 용
 
         _storage = new AppStorage();
+        Log.VerboseEnabled = _storage.Settings.VerboseLog;
         _identity = _storage.LoadOrCreateIdentity();
         _store = new JsonPeerStore(_storage);
         Log.Info($"시작: {_identity.Name} ({_identity.Id}), 지문 {_identity.Thumbprint[..16]}…, 관리자={SystemSetup.IsAdministrator()}");
@@ -89,6 +90,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         _store.Changed += () => _layout.Refresh();
 
         _node.Log += Log.Info;
+        _node.VerboseLog += Log.Verbose;
         _node.PeerConnected += OnPeerConnected;
         _node.PeerDisconnected += OnPeerDisconnected;
         _node.MessageReceived += OnMessage;
@@ -326,11 +328,11 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             var peerName = _store.Get(fromPeer)?.Name ?? "PC";
             OleClipboard.Set(new VirtualFileDataObject(offer,
                 index => _files.OpenRemote(fromPeer, offer.Id, index, offer.Entries[index].Size), peerName));
-            Log.Info($"클립보드 받음: '{peerName}' 의 파일 {offer.FileCount}개({FormatBytes(offer.TotalBytes)}) - 붙여넣을 때 받습니다");
+            Log.Verbose($"클립보드 받음: '{peerName}' 의 파일 {offer.FileCount}개({FormatBytes(offer.TotalBytes)}) - 붙여넣을 때 받습니다");
             return;
         }
         ClipboardIo.Write(content);
-        Log.Info($"클립보드 받음: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
+        Log.Verbose($"클립보드 받음: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
     });
 
     /// <summary>UI 스레드에서 불린다. 읽기만 여기서 하고 보내기는 다른 스레드에서 한다.</summary>
@@ -347,7 +349,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
                     var offer = _files.RegisterOffer(paths);
                     if (offer.Entries.Count == 0) return;
                     _clipboard.OnLocalChanged(new ClipboardContent([new ClipboardItem(ClipboardFormats.Files, offer.Encode())]));
-                    Log.Info($"파일 복사 알림 보냄: {offer.FileCount}개, {FormatBytes(offer.TotalBytes)}");
+                    Log.Verbose($"파일 복사 알림 보냄: {offer.FileCount}개, {FormatBytes(offer.TotalBytes)}");
                 }
                 catch (Exception ex) { Log.Error("파일 목록 만들기 실패", ex); }
             });
@@ -362,7 +364,7 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
                 int before = _clipboard.SentCount;
                 _clipboard.OnLocalChanged(content);
                 if (_clipboard.SentCount != before)
-                    Log.Info($"클립보드 보냄: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
+                    Log.Verbose($"클립보드 보냄: {string.Join(", ", content.Items.Select(i => i.Format))}, {FormatBytes(content.TotalBytes)}");
             }
             catch (Exception ex) { Log.Error("클립보드 보내기 실패", ex); }
         });
@@ -790,7 +792,8 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
             _node.EncryptionEnabled,
             _router.EdgeLocked,
             _router.Hotkeys,
-            _storage.Settings.AutoUpdate);
+            _storage.Settings.AutoUpdate,
+            Log.VerboseEnabled);
         var version = UpdateVersion.Display(CurrentVersion);
         var info = new SettingsInfo(_identity.Name, _identity.Thumbprint[..16] + "…", version, SystemSetup.IsAdministrator(), _updates.Status);
         using var form = new SettingsForm(values, info,
@@ -835,6 +838,12 @@ internal sealed class TrayApp : ApplicationContext, IInputSink, IClipboardTransp
         {
             _storage.Settings.AutoUpdate = next.AutoUpdate;
             Log.Info($"자동 업데이트: {(next.AutoUpdate ? "켬" : "끔")}");
+        }
+        if (next.VerboseLog != before.VerboseLog)
+        {
+            _storage.Settings.VerboseLog = next.VerboseLog;
+            Log.VerboseEnabled = next.VerboseLog;
+            Log.Info($"자세한 기록: {(next.VerboseLog ? "켬" : "끔")}");
         }
         SaveSettings();
         if (next.EncryptionEnabled != before.EncryptionEnabled) SetEncryption(next.EncryptionEnabled);

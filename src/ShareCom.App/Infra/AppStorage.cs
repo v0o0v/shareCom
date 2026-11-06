@@ -27,6 +27,8 @@ internal sealed class AppSettings
     public string? AutoStartPath { get; set; }
     /// <summary>GitHub 정식 릴리즈가 나오면 스스로 받아 바꾼다.</summary>
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>문제 확인용 자세한 기록(연결 재시도, 클립보드·파일 오감, 진단)까지 남긴다.</summary>
+    public bool VerboseLog { get; set; }
     /// <summary>시작하지 못해 되돌린 업데이트 버전. 이 버전 이하는 자동으로 받지 않는다.</summary>
     public string? SkippedUpdateVersion { get; set; }
 }

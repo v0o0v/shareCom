@@ -87,7 +87,10 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
     public event Action? DiscoveredChanged;
     public event Action<PairingResult>? PairingCompleted;
     /// <summary>진단용 기록.</summary>
+    /// <summary>늘 남길 큰 사건(연결됨·끊김 등).</summary>
     public event Action<string>? Log;
+    /// <summary>자주 생기는 일상 기록(연결 재시도 실패, 거절한 연결 등). 자세한 기록을 켰을 때만 남긴다.</summary>
+    public event Action<string>? VerboseLog;
     /// <summary>상대 PC의 통신 버전이 나보다 높아 연결하지 못했다(인자: 상대 버전). 업데이트를 확인할 때다.</summary>
     public event Action<int>? NewerPeerSeen;
 
@@ -201,7 +204,7 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
         }
         catch (Exception ex)
         {
-            Log?.Invoke($"들어온 연결 거절: {tcp.Client.RemoteEndPoint} - {ex.Message}");
+            VerboseLog?.Invoke($"들어온 연결 거절: {tcp.Client.RemoteEndPoint} - {ex.Message}");
             CheckPeerVersion(ex);
             tcp.Dispose();
             return;
@@ -212,7 +215,7 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
             var from = (tcp.Client.RemoteEndPoint as IPEndPoint)?.Address ?? IPAddress.None;
             if (!TryBeginIncomingPairing(from, out var why))
             {
-                Log?.Invoke($"짝 맺기 요청 무시: {from} ({h.PeerName}) - {why}");
+                VerboseLog?.Invoke($"짝 맺기 요청 무시: {from} ({h.PeerName}) - {why}");
                 h.Stream.Dispose();
                 tcp.Dispose();
                 return;
@@ -317,7 +320,7 @@ public sealed class Node : IAsyncDisposable, IPeerMessenger
         }
         catch (Exception ex)
         {
-            Log?.Invoke($"연결 실패: {endpoint} - {ex.Message}");
+            VerboseLog?.Invoke($"연결 실패: {endpoint} - {ex.Message}");
             CheckPeerVersion(ex);
             tcp.Dispose();
         }

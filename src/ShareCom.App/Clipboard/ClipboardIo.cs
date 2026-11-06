@@ -28,7 +28,7 @@ internal static class ClipboardIo
         var formats = obj.GetFormats(autoConvert: false);
         if (formats.Any(f => PrivacyMarkers.Contains(f, StringComparer.OrdinalIgnoreCase)))
         {
-            Log.Info("클립보드에 공유 제외 표시가 있어 보내지 않습니다(비밀번호 관리자 등).");
+            Log.Verbose("클립보드에 공유 제외 표시가 있어 보내지 않습니다(비밀번호 관리자 등).");
             return null;
         }
 
